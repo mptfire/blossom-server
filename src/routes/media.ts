@@ -268,7 +268,7 @@ export function buildMediaRouter(
         return errorResponse(
           ctx,
           415,
-          "multipart/form-data and urlencoded bodies are not supported — PUT the raw file body with its Content-Type per BUD-02",
+          "multipart/form-data and urlencoded bodies are not supported: PUT the raw file body with its Content-Type per BUD-02",
         );
       }
       const mimeType = xContentType.split(";")[0].trim();
@@ -374,12 +374,12 @@ export function buildMediaRouter(
         await ctx.req.raw.body?.cancel();
         debug(
           debugPrefix,
-          `rejected: envelope content-type "${mimeType}" — raw body required (BUD-02)`,
+          `rejected: envelope content-type "${mimeType}" - raw body required (BUD-02)`,
         );
         return errorResponse(
           ctx,
           415,
-          "multipart/form-data and urlencoded bodies are not supported — PUT the raw file body with its Content-Type per BUD-02",
+          "multipart/form-data and urlencoded bodies are not supported: PUT the raw file body with its Content-Type per BUD-02",
         );
       }
       const mimeRule = getFileRule(
