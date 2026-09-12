@@ -131,7 +131,20 @@ export function buildBlobsRouter(
   return app;
 }
 
-/** Parse a Range: bytes=start-end header. Returns null for unsatisfiable ranges. */
+/**
+ * Parse a `Range: bytes=start-end` header. Returns null for unsatisfiable ranges.
+ *
+ * Per RFC 9110 §14.1.2, a last-byte-pos at or beyond the end of the
+ * representation is clamped to the last byte rather than rejected, and a
+ * suffix-length longer than the representation selects the whole thing. Only a
+ * first-byte-pos at or past the end makes a range unsatisfiable.
+ *
+ * Clamping is what lets range-slicing caches work. nginx's slice module, for
+ * one, asks for fixed-size aligned slices (`bytes=1048576-2097151`), so the
+ * final slice of any file that isn't an exact multiple of the slice size always
+ * runs past EOF. Answering 416 there makes the cache abort mid-file and hand
+ * the client a truncated body.
+ */
 export function parseRange(
   header: string,
   totalSize: number,
@@ -145,15 +158,20 @@ export function parseRange(
   if (isNaN(start) && isNaN(end)) return null;
 
   if (isNaN(start)) {
-    // Suffix range: bytes=-500 → last 500 bytes
-    start = totalSize - end;
+    // Suffix range: bytes=-500 → last 500 bytes. A suffix-length of 0 selects
+    // nothing and is unsatisfiable; one longer than the file selects all of it.
+    if (end === 0) return null;
+    start = Math.max(0, totalSize - end);
     end = totalSize - 1;
   } else if (isNaN(end)) {
     // Open range: bytes=500- → from byte 500 to end
     end = totalSize - 1;
+  } else if (end >= totalSize) {
+    // Explicit range running past EOF → clamp to the last byte
+    end = totalSize - 1;
   }
 
-  if (start < 0 || end >= totalSize || start > end) return null;
+  if (start >= totalSize || start > end) return null;
   return { start, end };
 }
 

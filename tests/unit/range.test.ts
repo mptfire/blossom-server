@@ -49,6 +49,31 @@ Deno.test("parseRange: suffix range equal to file size (bytes=-1000)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseRange — RFC 9110 §14.1.2 clamping
+// ---------------------------------------------------------------------------
+
+Deno.test("parseRange: end past EOF is clamped to the last byte", () => {
+  assertEquals(parseRange("bytes=0-1000", 1000), { start: 0, end: 999 });
+});
+
+Deno.test("parseRange: end far past EOF is clamped to the last byte", () => {
+  assertEquals(parseRange("bytes=500-999999", 1000), { start: 500, end: 999 });
+});
+
+Deno.test("parseRange: nginx-style aligned slice past EOF is clamped", () => {
+  // `slice 1m` asks for bytes=1048576-2097151 on a 1111411-byte file: the
+  // start is inside the file, so the range is satisfiable and clamps to EOF.
+  assertEquals(parseRange("bytes=1048576-2097151", 1111411), {
+    start: 1048576,
+    end: 1111410,
+  });
+});
+
+Deno.test("parseRange: suffix longer than the file selects the whole file", () => {
+  assertEquals(parseRange("bytes=-5000", 1000), { start: 0, end: 999 });
+});
+
+// ---------------------------------------------------------------------------
 // parseRange — unsatisfiable / invalid inputs → null
 // ---------------------------------------------------------------------------
 
@@ -56,12 +81,20 @@ Deno.test("parseRange: start > end is unsatisfiable", () => {
   assertEquals(parseRange("bytes=100-99", 1000), null);
 });
 
-Deno.test("parseRange: end >= totalSize is unsatisfiable", () => {
-  assertEquals(parseRange("bytes=0-1000", 1000), null);
-});
-
 Deno.test("parseRange: start equals totalSize is unsatisfiable", () => {
   assertEquals(parseRange("bytes=1000-1000", 1000), null);
+});
+
+Deno.test("parseRange: start past totalSize is unsatisfiable", () => {
+  assertEquals(parseRange("bytes=1500-2000", 1000), null);
+});
+
+Deno.test("parseRange: open-end range starting past EOF is unsatisfiable", () => {
+  assertEquals(parseRange("bytes=1000-", 1000), null);
+});
+
+Deno.test("parseRange: suffix range on a 0-byte file is unsatisfiable", () => {
+  assertEquals(parseRange("bytes=-5", 0), null);
 });
 
 Deno.test("parseRange: suffix of 0 (bytes=-0) is unsatisfiable", () => {

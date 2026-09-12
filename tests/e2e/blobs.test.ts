@@ -301,6 +301,50 @@ Deno.test({
   ...testOpts,
 });
 
+Deno.test({
+  name: "GET blob: range ending past EOF is clamped to the last byte",
+  async fn() {
+    const res = await app.fetch(
+      new Request(`http://localhost${blobUrl}`, {
+        headers: { Range: `bytes=0-${BLOB_SIZE}` },
+      }),
+    );
+    assertEquals(res.status, 206);
+    assertEquals(
+      res.headers.get("Content-Range"),
+      `bytes 0-${BLOB_SIZE - 1}/${BLOB_SIZE}`,
+    );
+    assertEquals(res.headers.get("Content-Length"), String(BLOB_SIZE));
+
+    const body = new Uint8Array(await res.arrayBuffer());
+    assertEquals(body, BLOB_DATA);
+  },
+  ...testOpts,
+});
+
+Deno.test({
+  name: "GET blob: aligned slice past EOF returns the remainder, not 416",
+  async fn() {
+    // The shape nginx's slice module produces for a final slice: the start is
+    // inside the blob, the end runs past it.
+    const res = await app.fetch(
+      new Request(`http://localhost${blobUrl}`, {
+        headers: { Range: `bytes=16-${BLOB_SIZE + 500}` },
+      }),
+    );
+    assertEquals(res.status, 206);
+    assertEquals(
+      res.headers.get("Content-Range"),
+      `bytes 16-${BLOB_SIZE - 1}/${BLOB_SIZE}`,
+    );
+    assertEquals(res.headers.get("Content-Length"), String(BLOB_SIZE - 16));
+
+    const body = new Uint8Array(await res.arrayBuffer());
+    assertEquals(body, BLOB_DATA.subarray(16));
+  },
+  ...testOpts,
+});
+
 // ---------------------------------------------------------------------------
 // Range — 416 cases
 // ---------------------------------------------------------------------------
@@ -315,20 +359,6 @@ Deno.test({
     );
     assertEquals(res.status, 416);
     assertEquals(res.headers.get("Content-Range"), `bytes */${BLOB_SIZE}`);
-    await res.body?.cancel();
-  },
-  ...testOpts,
-});
-
-Deno.test({
-  name: "GET blob: end >= size returns 416",
-  async fn() {
-    const res = await app.fetch(
-      new Request(`http://localhost${blobUrl}`, {
-        headers: { Range: `bytes=0-${BLOB_SIZE}` },
-      }),
-    );
-    assertEquals(res.status, 416);
     await res.body?.cancel();
   },
   ...testOpts,
