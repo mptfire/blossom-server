@@ -14,6 +14,8 @@ export const UploadIsland: FC<{
   optimizeByDefault: boolean;
   mirrorEnabled: boolean;
   mirrorRequireAuth: boolean;
+  listEnabled: boolean;
+  listRequireAuth: boolean;
 }> = (
   {
     requireAuth,
@@ -23,6 +25,8 @@ export const UploadIsland: FC<{
     optimizeByDefault,
     mirrorEnabled,
     mirrorRequireAuth,
+    listEnabled,
+    listRequireAuth,
   },
 ) => (
   <section>
@@ -38,6 +42,8 @@ export const UploadIsland: FC<{
             data-optimize-by-default={String(optimizeByDefault)}
             data-mirror-enabled={String(mirrorEnabled)}
             data-mirror-require-auth={String(mirrorRequireAuth)}
+            data-list-enabled={String(listEnabled)}
+            data-list-require-auth={String(listRequireAuth)}
             class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden"
           >
             {/* Static fallback shown before JS loads */}

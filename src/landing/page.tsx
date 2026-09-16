@@ -38,6 +38,8 @@ export const LandingPage: FC<{ db: IDbHandle; config: Config }> = async (
           config.media.optimizeByDefault}
         mirrorEnabled={config.mirror.enabled}
         mirrorRequireAuth={config.mirror.requireAuth}
+        listEnabled={config.list.enabled}
+        listRequireAuth={config.list.requireAuth}
       />
     </Layout>
   );

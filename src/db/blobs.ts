@@ -179,17 +179,26 @@ export async function listBlobsByPubkey(
   const args: (string | number)[] = [pubkey];
 
   if (opts.cursor) {
-    // cursor is the sha256 of the last blob in the previous page
-    // We need the uploaded timestamp of the cursor blob to paginate correctly
+    // Cursor is the sha256 of the last blob in the previous page. The lookup is
+    // scoped to the requested owner: another user's blob (or a blob deleted
+    // between pages) is an UNKNOWN cursor and must error — falling through with
+    // no condition would silently restart the list from page one.
     const cursorRs = await db.execute({
-      sql: "SELECT uploaded FROM blobs WHERE sha256 = ?",
-      args: [opts.cursor],
+      sql: `SELECT b.uploaded FROM blobs b
+            JOIN owners o ON o.blob = b.sha256
+            WHERE b.sha256 = ? AND o.pubkey = ?`,
+      args: [opts.cursor, pubkey],
     });
     const cursorRow = cursorRs.rows[0];
-    if (cursorRow) {
-      conditions.push("(b.uploaded < ? OR (b.uploaded = ? AND b.sha256 > ?))");
-      args.push(cursorRow[0] as number, cursorRow[0] as number, opts.cursor);
+    if (!cursorRow) {
+      const err = new Error(
+        `Unknown cursor for pubkey ${pubkey}`,
+      ) as Error & { code: string };
+      err.code = "INVALID_CURSOR";
+      throw err;
     }
+    conditions.push("(b.uploaded < ? OR (b.uploaded = ? AND b.sha256 > ?))");
+    args.push(cursorRow[0] as number, cursorRow[0] as number, opts.cursor);
   }
 
   if (opts.since !== undefined) {

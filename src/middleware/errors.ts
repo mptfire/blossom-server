@@ -49,11 +49,13 @@ export function onError(err: Error, ctx: Context): Response {
     }
     return ctx.body(err.message || "An error occurred", err.status, {
       "Content-Type": "text/plain",
+      "Cache-Control": "private, no-store",
     });
   }
 
   console.error("Unhandled error:", err);
   return ctx.body("Internal server error", 500, {
     "Content-Type": "text/plain",
+    "Cache-Control": "private, no-store",
   });
 }

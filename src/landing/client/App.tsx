@@ -2,6 +2,7 @@ import { useEffect, useState } from "@hono/hono/jsx/dom";
 import type { Tab } from "./types.ts";
 import { UploadForm } from "./UploadForm.tsx";
 import { MirrorForm } from "./MirrorForm.tsx";
+import { FilesGallery } from "./FilesGallery.tsx";
 
 export function App({
   requireAuth,
@@ -10,6 +11,7 @@ export function App({
   optimizeByDefault,
   mirrorEnabled,
   mirrorRequireAuth,
+  listEnabled,
 }: {
   requireAuth: boolean;
   mediaEnabled: boolean;
@@ -17,6 +19,7 @@ export function App({
   optimizeByDefault: boolean;
   mirrorEnabled: boolean;
   mirrorRequireAuth: boolean;
+  listEnabled: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<Tab>("upload");
   // Each tab reports whether it has active items so we can hide server-info
@@ -38,10 +41,12 @@ export function App({
         : "border-transparent text-gray-500 hover:text-gray-300"
     }`;
 
+  const showTabBar = mirrorEnabled || listEnabled;
+
   return (
     <div>
-      {/* Tab bar — only rendered when mirror is enabled */}
-      {mirrorEnabled && (
+      {/* Tab bar — rendered when any secondary tab exists */}
+      {showTabBar && (
         <div class="flex border-b border-gray-800 px-6 pt-4">
           <button
             type="button"
@@ -50,13 +55,24 @@ export function App({
           >
             Upload
           </button>
-          <button
-            type="button"
-            class={tabClass("mirror")}
-            onClick={() => setActiveTab("mirror")}
-          >
-            Mirror
-          </button>
+          {mirrorEnabled && (
+            <button
+              type="button"
+              class={tabClass("mirror")}
+              onClick={() => setActiveTab("mirror")}
+            >
+              Mirror
+            </button>
+          )}
+          {listEnabled && (
+            <button
+              type="button"
+              class={tabClass("files")}
+              onClick={() => setActiveTab("files")}
+            >
+              My Files
+            </button>
+          )}
         </div>
       )}
 
@@ -75,6 +91,9 @@ export function App({
           requireAuth={mirrorRequireAuth}
           onQueueChange={setMirrorHasItems}
         />
+      )}
+      {activeTab === "files" && listEnabled && (
+        <FilesGallery listEnabled={listEnabled} />
       )}
     </div>
   );

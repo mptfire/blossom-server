@@ -43,6 +43,23 @@ export function buildListRouter(
 ): Hono<{ Variables: BlossomVariables }> {
   const app = new Hono<{ Variables: BlossomVariables }>();
 
+  // Authenticated listing must never be cached anywhere (senior review 2026-09-15):
+  // private, no-store on success AND handler-level error responses. Failures thrown
+  // by the auth middleware itself are covered by the blossom-router/global onError
+  // handlers, which set the same header.
+  app.use("*", async (ctx, next) => {
+    try {
+      await next();
+    } finally {
+      try {
+        ctx.res.headers.set("Cache-Control", "private, no-store");
+      } catch {
+        // No response yet (thrown before the handler produced one) — the
+        // error handlers add the header on that path.
+      }
+    }
+  });
+
   app.get("/list/:pubkey", async (ctx) => {
     if (!config.list.enabled) {
       return errorResponse(
@@ -90,11 +107,11 @@ export function buildListRouter(
     const cursor = ctx.req.query("cursor") ?? undefined;
 
     const limit = rawLimit !== undefined ? parseInt(rawLimit, 10) : undefined;
-    if (limit !== undefined && (isNaN(limit) || limit < 1)) {
+    if (limit !== undefined && (isNaN(limit) || limit < 1 || limit > 1000)) {
       return errorResponse(
         ctx,
         400,
-        "Invalid limit: must be a positive integer",
+        "Invalid limit: must be an integer between 1 and 1000",
       );
     }
 
@@ -116,12 +133,27 @@ export function buildListRouter(
       );
     }
 
-    const blobs = await listBlobsByPubkey(db, pubkey, {
-      limit,
-      cursor,
-      since,
-      until,
-    });
+    let blobs: Awaited<ReturnType<typeof listBlobsByPubkey>>;
+    try {
+      blobs = await listBlobsByPubkey(db, pubkey, {
+        limit,
+        cursor,
+        since,
+        until,
+      });
+    } catch (err) {
+      // A cursor for a blob that no longer exists (or belongs to another
+      // pubkey) must never be interpreted as "start over" — the client shows
+      // a refresh prompt instead of a silently truncated gallery.
+      if ((err as { code?: string }).code === "INVALID_CURSOR") {
+        return errorResponse(
+          ctx,
+          400,
+          "Unknown cursor: the referenced blob no longer exists - refresh the list",
+        );
+      }
+      throw err;
+    }
 
     const baseUrl = getBaseUrl(ctx.req.raw, config.publicDomain);
     const descriptors: BlobDescriptor[] = await Promise.all(

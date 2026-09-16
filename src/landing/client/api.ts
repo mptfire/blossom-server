@@ -145,3 +145,40 @@ function parseRetryAfter(value: string | null): number | undefined {
   const seconds = parseInt(value, 10);
   return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 }
+
+/** Non-2xx response from the list endpoint. Body is the X-Reason/plain text. */
+export class ListHttpError extends Error {
+  constructor(
+    public status: number,
+    body: string,
+  ) {
+    super(body || `list failed with ${status}`);
+    this.name = "ListHttpError";
+  }
+}
+
+/**
+ * Fetch one page of the signer's blob descriptors via GET /list/:pubkey.
+ * The Authorization header must be a t="list" BUD-11 token (see signListAuth).
+ * Cursor semantics (BUD-12-style keyset): pass the last descriptor's sha256;
+ * a cursor whose blob no longer exists (or belongs to another key) returns
+ * 400 — surfaced as ListHttpError with status 400 and an X-Reason body.
+ */
+export async function listMyBlobs(
+  authHeader: string,
+  pubkey: string,
+  opts: { cursor?: string; limit?: number } = {},
+): Promise<BlobDescriptor[]> {
+  const url = new URL(`/list/${pubkey}`, globalThis.location.origin);
+  if (opts.limit !== undefined) {
+    url.searchParams.set("limit", String(opts.limit));
+  }
+  if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
+  const res = await fetch(url, {
+    headers: { Authorization: authHeader },
+  });
+  if (!res.ok) {
+    throw new ListHttpError(res.status, await res.text());
+  }
+  return res.json() as Promise<BlobDescriptor[]>;
+}

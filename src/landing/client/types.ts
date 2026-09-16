@@ -19,7 +19,7 @@ export type MirrorStatus =
   | "retrying"
   | "error";
 
-export type Tab = "upload" | "mirror";
+export type Tab = "upload" | "mirror" | "files";
 
 export interface BlobDescriptor {
   sha256: string;

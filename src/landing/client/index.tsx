@@ -22,6 +22,7 @@ if (root) {
       optimizeByDefault={root.dataset.optimizeByDefault === "true"}
       mirrorEnabled={root.dataset.mirrorEnabled === "true"}
       mirrorRequireAuth={root.dataset.mirrorRequireAuth === "true"}
+      listEnabled={root.dataset.listEnabled === "true"}
     />,
     root,
   );

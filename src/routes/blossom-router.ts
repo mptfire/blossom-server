@@ -37,17 +37,21 @@ export function buildBlossomRouter(
   // returned as text/plain with an X-Reason header. This only fires for routes
   // registered on this sub-app — admin and landing retain their own formats.
   app.onError((err, c) => {
+    // Errors are never cacheable — also covers middleware-thrown auth failures
+    // on /list (senior review 2026-09-15: private, no-store on all list errors).
     if (err instanceof HTTPException) {
       const reason = err.message || "An error occurred";
       return c.body(reason, err.status, {
         "X-Reason": reason,
         "Content-Type": "text/plain",
+        "Cache-Control": "private, no-store",
       });
     }
     console.error("Unhandled error:", err);
     return c.body("Internal server error", 500, {
       "X-Reason": "Internal server error",
       "Content-Type": "text/plain",
+      "Cache-Control": "private, no-store",
     });
   });
 
