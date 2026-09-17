@@ -86,22 +86,24 @@ function forgedHeader(claimedPubkey: string): string {
 }
 
 let app: Hono<{ Variables: BlossomVariables }>;
+let db: Awaited<ReturnType<typeof initDb>>;
 let cleanup: () => Promise<void>;
 
-const aOwned: string[] = []; // 53 hashes, incl. the shared one
+const aOwned: string[] = []; // A-owned hashes (56 at last run)
 const bOnly: string[] = []; // 3 hashes
 const sharedHash: string[] = []; // 1 entry mirroring aOwned's shared blob
 const deletedByTest: string[] = []; // blobs the DELETE-matrix test removes
+const pageSizes2: number[] = []; // explicit-timestamp pagination page sizes
 
 const testOpts = { sanitizeOps: false, sanitizeResources: false } as const;
 
 Deno.test({
-  name: "matrix setup: seed 53 A-owned (1 shared) + 3 B-only blobs",
+  name: "matrix setup: seed A-owned + B-only blobs",
   async fn() {
     const tmpDir = await Deno.makeTempDir({ prefix: "blossom_e2e_matrix_" });
     const dbPath = join(tmpDir, "test.db");
     const dbConfig = { path: dbPath };
-    const db = await initDb(dbConfig);
+    db = await initDb(dbConfig);
     const storage = new LocalStorage(join(tmpDir, "blobs"));
     await storage.setup();
     const pool = initPool(1, 4, 500, db, dbConfig);
@@ -255,7 +257,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "matrix: ownership + pagination — 24+24+5 pages, 53 hashes exactly once, shared once, no B-only",
+    "matrix: ownership + pagination — every owned hash exactly once, shared once, no B-only",
   async fn() {
     const collected: string[] = [];
     let cursor: string | undefined;
@@ -274,7 +276,7 @@ Deno.test({
         : undefined;
       guard++;
       assertEquals(guard < 10, true, "pagination must terminate");
-    } while (cursor && collected.length < 53);
+    } while (cursor && collected.length < aOwned.length);
 
     assertEquals(pageSizes, [24, 24, 8], "page sizes 24+24+8");
     assertEquals(collected.length, aOwned.length, "every A-owned hash appears");
@@ -415,6 +417,55 @@ Deno.test({
     // invalid type charset → 400
     const bad = await listPage({ type: "image%22" });
     assertEquals(bad.status, 400);
+  },
+  ...testOpts,
+});
+
+Deno.test({
+  name:
+    "matrix: explicit-timestamp pagination — same-second seeds page deterministically",
+  async fn() {
+    // Direct-DB seeding pins uploaded timestamps exactly (the HTTP API always
+    // stamps now), exercising the sha256 tie-breaker deterministically.
+    const now = Math.floor(Date.now() / 1000);
+    const inserted: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      // 60 blobs share ONE timestamp; sha256 ascending is the sole order.
+      const sha = (`${(i + 1).toString(16).padStart(2, "0")}`).padEnd(64, "0");
+      await db.execute({
+        sql:
+          "INSERT INTO blobs (sha256, size, type, uploaded) VALUES (?, ?, ?, ?)",
+        args: [sha, i, "text/plain", now],
+      });
+      await db.execute({
+        sql: "INSERT INTO owners (blob, pubkey) VALUES (?, ?)",
+        args: [sha, pkA],
+      });
+      inserted.push(sha);
+    }
+    const collected: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const params: Record<string, string> = { limit: "24" };
+      if (cursor) params.cursor = cursor;
+      const { status, json } = await listPage(params);
+      assertEquals(status, 200);
+      const page = json as { sha256: string }[];
+      pageSizes2.push(page.length);
+      for (const d of page) collected.push(d.sha256);
+      cursor = page.length ? page[page.length - 1].sha256 : undefined;
+    } while (cursor);
+    // Scope assertions to the inserted set — the library also contains the
+    // earlier fixture blobs, so absolute page sizes vary.
+    const insertedSet = new Set(inserted);
+    assertEquals(collected.filter((h) => insertedSet.has(h)).length, 60);
+    assertEquals(new Set(collected.filter((h) => insertedSet.has(h))).size, 60);
+    // ascending sha256 within the shared timestamp
+    assertEquals(
+      collected.filter((h) => insertedSet.has(h)),
+      [...inserted].sort(),
+      "tie-break order must be sha256 ascending",
+    );
   },
   ...testOpts,
 });

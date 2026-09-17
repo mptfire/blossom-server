@@ -78,14 +78,25 @@ export function buildBlobsRouter(
     );
 
     const mimeType = blob.type ?? "application/octet-stream";
+    // Active-content types are served as downloads, never inline: SVG/HTML
+    // served from this origin would execute with application-origin privileges
+    // when navigated to directly (senior review 2026-09-18, item S6).
+    // nosniff guards the rest against MIME-sniffing drift.
+    const activeDocument = /(?:^|\/)(?:svg\+xml|html|xhtml)$/i.test(mimeType);
     const headers: Record<string, string> = {
       "Content-Type": mimeType,
       "Content-Length": String(blob.size),
       "Accept-Ranges": "bytes",
       "Cache-Control": "public, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
       ETag: `"${hash}"`,
       "Last-Modified": new Date(blob.uploaded * 1000).toUTCString(),
     };
+    if (activeDocument) {
+      headers["Content-Disposition"] = `attachment; filename="${
+        hash.slice(0, 12)
+      }${ext ? `.${ext}` : ""}"`;
+    }
 
     // Conditional request: If-None-Match (RFC 9110 §13.1.2)
     // The SHA-256 hash is a perfect ETag — content-addressed, immutable, already computed.

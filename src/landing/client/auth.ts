@@ -45,14 +45,18 @@ export async function signBatch(
 }
 
 /**
- * Build a BUD-11 list authorization — a kind 24242 event with t="list" and a
- * short-lived expiration. Separate operation authorization from upload: a
- * list token never authorizes uploads and vice versa.
+ * Build a BUD-11 list authorization — a kind 24242 event with t="list",
+ * a server scope, and a short-lived expiration. Separate operation
+ * authorization from upload: a list token never authorizes uploads and vice
+ * versa. The server tag scopes the token to this deployment so a leaked token
+ * cannot be replayed against another accepting Blossom server (senior review
+ * 2026-09-18, item S5).
  * Returns the Authorization header value, the signer's pubkey, and the
  * expiration (unix seconds) so the caller can re-sign before expiry.
  */
 export async function signListAuth(
   nostr: NostrProvider,
+  serverOrigin: string,
 ): Promise<{ header: string; pubkey: string; expiresAt: number }> {
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + 300;
@@ -60,7 +64,11 @@ export async function signListAuth(
     kind: 24242,
     content: "list my files",
     created_at: now,
-    tags: [["t", "list"], ["expiration", String(expiresAt)]],
+    tags: [
+      ["t", "list"],
+      ["server", serverOrigin],
+      ["expiration", String(expiresAt)],
+    ],
   })) as { pubkey?: string; sig?: string };
   return {
     header: "Nostr " + btoa(JSON.stringify(event)),

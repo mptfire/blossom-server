@@ -3,20 +3,36 @@ import type { BlobDescriptor, NostrProvider } from "./types.ts";
 import { getNostrProvider, signListAuth } from "./auth.ts";
 import { ListHttpError, listMyBlobs } from "./api.ts";
 import { rememberedFilename } from "./helpers.ts";
+import { type CopyFormat, copyTextFor } from "./copy-export.ts";
 
 /** Page size per senior review v1 decision. */
 const PAGE_SIZE = 24;
 /** Originals larger than this render as icons in the grid (no lazy full fetch). */
 const INLINE_ORIGINAL_MAX_BYTES = 20 * 1024 * 1024;
+/** Deadlines (senior review 2026-09-18, item C6): nothing waits forever. */
+const SIGNER_TIMEOUT_MS = 10000;
+/** Marker error for a session that was superseded while work was in flight. */
+class StaleSession extends Error {
+  constructor() {
+    super("stale session");
+    this.name = "StaleSession";
+  }
+}
 
 type Phase = "disconnected" | "connecting" | "ready";
 
+type FilterKind = "all" | "image" | "video" | "audio" | "other";
+
 interface GalleryError {
   /** noext: no NIP-07 provider · rejected: signer refused · forbidden: 403 ·
-   *  cursor: dataset changed, refresh needed · server: 5xx/network · auth: 401 */
-  kind: "noext" | "rejected" | "forbidden" | "cursor" | "server" | "auth";
+   *  cursor: dataset changed, refresh needed · server: 5xx/network ·
+   *  timeout: signer/network deadline · auth: 401 */
+  kind: "noext" | "rejected" | "forbidden" | "cursor" | "server" | "auth" |
+    "timeout";
   message: string;
   retryable: boolean;
+  /** Retry must restart the traversal instead of replaying the failed request. */
+  retryReset?: boolean;
 }
 
 function shortHash(hash: string): string {
@@ -33,7 +49,7 @@ function extFromUrl(url: string): string {
   }
 }
 
-/** Only same-origin URLs may be rendered as media (senior review item 6). */
+/** Only same-origin URLs may be rendered as media anywhere in the gallery. */
 function isTrustedUrl(url: string): boolean {
   try {
     return new URL(url).origin === globalThis.location.origin;
@@ -48,13 +64,29 @@ function thumbUrl(d: BlobDescriptor): string | null {
   return thumb;
 }
 
-function kindOf(
-  d: BlobDescriptor,
-): "image" | "gif" | "video" | "audio" | "other" {
+/** Filter/export category. GIFs are images for both (senior review C4);
+ * SVG is image/* per the server, so it filters under Images too. */
+function categoryOf(d: BlobDescriptor): FilterKind {
+  const type = d.type ?? "";
+  if (
+    type.startsWith("image/") || type.startsWith("video/") ||
+    type.startsWith("audio/")
+  ) {
+    return type.startsWith("video/")
+      ? "video"
+      : type.startsWith("audio/")
+      ? "audio"
+      : "image";
+  }
+  return "other";
+}
+
+/** Grid/preview policy — deliberately more conservative than the category:
+ * GIF renders a static preview only, SVG/unknown never render inline. */
+function previewKind(d: BlobDescriptor): "image" | "gif" | "video" | "audio" | "other" {
   const type = d.type ?? "";
   if (type === "image/gif") return "gif";
-  // SVG is never rendered inline (senior review: generic card even when the
-  // type claims image/*) — SVG served same-origin can carry scripts.
+  // SVG served same-origin can carry scripts — never render inline (S6/S2).
   if (type === "image/svg+xml") return "other";
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("video/")) return "video";
@@ -71,10 +103,29 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [phase, setPhase] = useState<Phase>("disconnected");
   const [error, setError] = useState<GalleryError | null>(null);
   const [pubkey, setPubkey] = useState<string | null>(null);
+  // Session generation (senior review S3): bumped on disconnect and identity
+  // change; any async completion from an older generation is discarded.
+  const sessionGen = useRef(0);
   // Auth token + pubkey live in refs (state updates don't apply within the
   // same tick — the first list request would otherwise request /list/ with an
   // empty pubkey). Token stays in memory only (senior review item 3).
@@ -91,12 +142,6 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [fallbackKey, setFallbackKey] = useState<string | null>(null);
   const [viewer, setViewer] = useState<BlobDescriptor | null>(null);
   const lastCardRef = useRef<HTMLElement | null>(null);
-  // Filters apply to loaded pages; whole-library filtering needs a server
-  // type param (upstream candidate). Sort re-orders the loaded set.
-  const [filter, setFilter] = useState<
-    "all" | "image" | "video" | "audio" | "other"
-  >("all");
-  const [newestFirst, setNewestFirst] = useState(true);
 
   if (!listEnabled) {
     return (
@@ -108,9 +153,29 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     );
   }
 
-  async function getToken(force = false): Promise<string> {
+  /** Clear every piece of gallery state. Called on disconnect and identity
+   * change — an atomic identity boundary (senior review item S3). */
+  function resetGalleryState(): void {
+    tokenRef.current = null;
+    pubkeyRef.current = null;
+    setPubkey(null);
+    setDescriptors([]);
+    seenHashes.current = new Set();
+    nextCursor.current = null;
+    lastCursor.current = null;
+    finished.current = false;
+    setError(null);
+    setCopiedKey(null);
+    setFallbackKey(null);
+    setViewer(null);
+  }
+
+  async function getToken(force: boolean, gen: number): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
-    if (!force && tokenRef.current && tokenRef.current.expiresAt > now + 30) {
+    if (
+      !force && tokenRef.current &&
+      tokenRef.current.expiresAt > now + 30 && gen === sessionGen.current
+    ) {
       return tokenRef.current.header;
     }
     const nostr: NostrProvider | undefined = getNostrProvider();
@@ -125,15 +190,25 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       setPhase("disconnected");
       throw e;
     }
-    const { header, pubkey: signedPubkey, expiresAt } = await signListAuth(
-      nostr,
+    const { header, pubkey: signedPubkey, expiresAt } = await withTimeout(
+      signListAuth(nostr, globalThis.location.origin),
+      SIGNER_TIMEOUT_MS,
+      "The Nostr signer did not respond in time.",
     );
-    // Key changed underneath us → previous cards belong to another identity.
-    if (pubkey && signedPubkey !== pubkey) {
+    // Superseded while signing (disconnect/identity change) → discard.
+    if (gen !== sessionGen.current) throw new StaleSession();
+    // Identity change = atomic boundary: bump the generation so any other
+    // in-flight work from the previous identity is discarded too.
+    if (pubkeyRef.current && signedPubkey !== pubkeyRef.current) {
+      sessionGen.current++;
       setDescriptors([]);
       seenHashes.current = new Set();
       nextCursor.current = null;
+      lastCursor.current = null;
       finished.current = false;
+      setCopiedKey(null);
+      setFallbackKey(null);
+      setViewer(null);
     }
     pubkeyRef.current = signedPubkey;
     setPubkey(signedPubkey);
@@ -144,11 +219,18 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   async function connect(): Promise<void> {
     setError(null);
     setPhase("connecting");
+    const gen = sessionGen.current;
     try {
-      await getToken(true);
+      await withTimeout(
+        getToken(true, gen),
+        SIGNER_TIMEOUT_MS,
+        "The Nostr signer did not respond in time.",
+      );
+      if (gen !== sessionGen.current) return;
       setPhase("ready");
       await loadPage(true);
     } catch (err) {
+      if (err instanceof StaleSession || gen !== sessionGen.current) return;
       if ((err as GalleryError)?.kind === "noext") return; // already handled
       setError({
         kind: "rejected",
@@ -159,61 +241,81 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     }
   }
 
-  async function loadPage(reset = false, reauth = false): Promise<void> {
-    if (loadingRef.current) return; // one request in flight, ever
+  /** Single-locked page load: one in-flight request, at most one forced
+   * re-authorization inside the same lock (senior review C2). Every
+   * post-await write is discarded when the session generation moved. */
+  async function loadPage(reset = false): Promise<void> {
+    if (loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
     setError(null);
+    let gen = sessionGen.current;
     try {
-      const header = await getToken(reauth);
-      const pk = pubkeyRef.current ?? "";
-      const page = await listMyBlobs(header, pk, {
-        limit: PAGE_SIZE,
-        cursor: reset ? undefined : nextCursor.current ?? undefined,
-      });
-      if (reset) {
-        setDescriptors([]);
-        seenHashes.current = new Set();
-        nextCursor.current = null;
-        finished.current = false;
-      }
-      // Dedupe + append (dedupe hides client repeats; skipped files surface
-      // as an incomplete page count, which the cursor error path handles).
-      setDescriptors((prev) => {
-        const next = reset ? [] : [...prev];
-        for (const d of page) {
-          if (!seenHashes.current.has(d.sha256)) {
-            seenHashes.current.add(d.sha256);
-            next.push(d);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const header = await getToken(attempt > 0, gen);
+        if (gen !== sessionGen.current) return;
+        const pk = pubkeyRef.current ?? "";
+        const page = await listMyBlobs(header, pk, {
+          limit: PAGE_SIZE,
+          cursor: reset ? undefined : nextCursor.current ?? undefined,
+        });
+        if (gen !== sessionGen.current) return;
+        if (reset) {
+          setDescriptors([]);
+          seenHashes.current = new Set();
+          nextCursor.current = null;
+          lastCursor.current = null; // C1: full traversal reset (was retained →
+          // the next page was mistaken for a repeat and pagination died)
+          finished.current = false;
+        }
+        setDescriptors((prev) => {
+          const next = reset ? [] : [...prev];
+          for (const d of page) {
+            if (!seenHashes.current.has(d.sha256)) {
+              seenHashes.current.add(d.sha256);
+              next.push(d);
+            }
           }
+          return next;
+        });
+        if (page.length < PAGE_SIZE) {
+          finished.current = true;
+          nextCursor.current = null;
+          return;
         }
-        return next;
-      });
-      if (page.length < PAGE_SIZE) {
-        finished.current = true;
-      } else {
         const newCursor = page[page.length - 1].sha256;
-        if (newCursor === lastCursor.current) {
-          finished.current = true; // repeated cursor: stop instead of looping
-        } else {
-          nextCursor.current = newCursor;
-          lastCursor.current = newCursor;
+        // Repeated cursor is only meaningful for continuations, and it means
+        // the dataset changed — surface it, never silently claim completion.
+        if (!reset && newCursor === lastCursor.current) {
+          finished.current = true;
+          nextCursor.current = null;
+          setError({
+            kind: "cursor",
+            message: "Files changed while loading — refresh the list.",
+            retryable: true,
+            retryReset: true,
+          });
+          return;
         }
-        // Cursor only advances after a successful response (above).
+        nextCursor.current = newCursor;
+        lastCursor.current = newCursor;
+        return;
       }
     } catch (err) {
+      if (gen !== sessionGen.current) return; // superseded session
+      if (err instanceof StaleSession) {
+        // Identity changed mid-sign: restart the traversal as the new identity.
+        gen = sessionGen.current;
+        setError(null);
+        return loadPage(reset);
+      }
       if (err instanceof ListHttpError) {
         if (err.status === 401) {
-          // Token expired mid-session: re-sign exactly once, never loop.
-          if (!reauth) {
-            loadingRef.current = false;
-            setLoading(false);
-            return loadPage(reset, true);
-          }
           setError({
             kind: "auth",
             message: "Your list authorization expired. Reconnect to continue.",
             retryable: true,
+            retryReset: false,
           });
         } else if (err.status === 403) {
           setError({
@@ -226,6 +328,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
             kind: "cursor",
             message: "Files changed while loading — refresh the list.",
             retryable: true,
+            retryReset: true,
           });
         } else {
           setError({
@@ -242,20 +345,18 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         });
       }
     } finally {
-      loadingRef.current = false;
-      setLoading(false);
+      // A superseded session leaves the lock to the operation that owns the
+      // current generation (senior review C2: the 401 retry released early).
+      if (gen === sessionGen.current) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     }
   }
 
   function disconnect(): void {
-    tokenRef.current = null;
-    setPubkey(null);
-    setDescriptors([]);
-    seenHashes.current = new Set();
-    nextCursor.current = null;
-    lastCursor.current = null;
-    finished.current = false;
-    setError(null);
+    sessionGen.current++; // invalidate all in-flight work (S3)
+    resetGalleryState();
     setPhase("disconnected");
   }
 
@@ -263,13 +364,14 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     void loadPage(true);
   }
 
-  async function copyVariant(
-    d: BlobDescriptor,
-    fmt: CopyFormat,
-  ): Promise<void> {
+  async function copyVariant(d: BlobDescriptor, fmt: CopyFormat): Promise<void> {
     const key = `${d.sha256}:${fmt}`;
+    const name = rememberedFilename(d.sha256) ??
+      `${shortHash(d.sha256)}${extFromUrl(d.url)}`;
+    const isImage = categoryOf(d) === "image" &&
+      d.type !== "image/svg+xml";
     try {
-      await navigator.clipboard.writeText(copyTextFor(d, fmt));
+      await navigator.clipboard.writeText(copyTextFor(d, fmt, name, isImage));
       setCopiedKey(key);
       setFallbackKey(null);
       setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500);
@@ -294,6 +396,22 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     if (!viewer) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeViewer();
+      // Minimal focus containment: keep Tab cycling inside the dialog.
+      if (e.key === "Tab") {
+        const focusables = document.querySelectorAll<HTMLElement>(
+          '[role="dialog"] button, [role="dialog"] a, [role="dialog"] input',
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     globalThis.addEventListener("keydown", onKey);
     return () => globalThis.removeEventListener("keydown", onKey);
@@ -328,15 +446,9 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   // Filters apply to loaded pages; server-side type filtering is the
   // ?type= param (upstream candidate for whole-library filtering).
   const visible = descriptors
-    .filter((d) => filter === "all" || kindOf(d) === filter)
-    .sort((
-      a,
-      b,
-    ) => (newestFirst ? b.uploaded - a.uploaded : a.uploaded - b.uploaded));
-  const filterChips: Array<{
-    key: typeof filter;
-    label: string;
-  }> = [
+    .filter((d) => filter === "all" || categoryOf(d) === filter)
+    .sort((a, b) => (newestFirst ? b.uploaded - a.uploaded : a.uploaded - b.uploaded));
+  const filterChips: Array<{ key: FilterKind; label: string }> = [
     { key: "all", label: "All" },
     { key: "image", label: "Images" },
     { key: "video", label: "Videos" },
@@ -376,6 +488,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         {filterChips.map((chip) => (
           <button
             type="button"
+            aria-pressed={filter === chip.key}
             onClick={() => setFilter(chip.key)}
             class={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
               filter === chip.key
@@ -391,6 +504,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           type="button"
           onClick={() => setNewestFirst((v) => !v)}
           class="px-2.5 py-1 rounded-full bg-gray-800 text-gray-400 hover:text-gray-200 text-xs"
+          title="Sort applies to the files loaded so far — use Load more for the rest"
         >
           {newestFirst ? "Newest first ↓" : "Oldest first ↑"}
         </button>
@@ -404,11 +518,13 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
               type="button"
               onClick={() => {
                 setError(null);
-                void loadPage(descriptors.length === 0);
+                // Cursor errors mean the dataset moved: replaying the same
+                // request can never succeed — restart the traversal (C3).
+                void loadPage(error.retryReset ? true : descriptors.length === 0);
               }}
               class="px-3 py-1 rounded bg-red-900/60 hover:bg-red-900 text-xs"
             >
-              Retry
+              {error.retryReset ? "Refresh list" : "Retry"}
             </button>
           )}
         </div>
@@ -423,9 +539,8 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       )}
       {!gridEmpty && visible.length === 0 && (
         <p class="text-center text-gray-500 text-sm mt-4">
-          No{" "}
-          {filter === "all" ? "" : filter + " "}files loaded — try Load more or
-          All.
+          No {filter === "all" ? "" : filter + " "}files loaded — try Load more
+          or All.
         </p>
       )}
 
@@ -463,27 +578,9 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   );
 }
 
-type CopyFormat = "url" | "md" | "html";
-
-function displayName(d: BlobDescriptor): string {
+function displayNameFor(d: BlobDescriptor): string {
   return rememberedFilename(d.sha256) ??
     `${shortHash(d.sha256)}${extFromUrl(d.url)}`;
-}
-
-function copyTextFor(d: BlobDescriptor, fmt: CopyFormat): string {
-  const name = rememberedFilename(d.sha256) ??
-    `${shortHash(d.sha256)}${extFromUrl(d.url)}`;
-  if (fmt === "md") {
-    return kindOf(d) === "image"
-      ? `![${name}](${d.url})`
-      : `[${name}](${d.url})`;
-  }
-  if (fmt === "html") {
-    return kindOf(d) === "image"
-      ? `<img src="${d.url}" alt="${name}">`
-      : `<a href="${d.url}">${name}</a>`;
-  }
-  return d.url;
 }
 
 function Card(
@@ -495,13 +592,16 @@ function Card(
     onCopy: (fmt: CopyFormat) => void;
   },
 ) {
-  const kind = kindOf(d);
+  const preview = previewKind(d);
+  const category = categoryOf(d);
   const thumb = thumbUrl(d);
-  const canInline = kind === "image" &&
-    d.size <= INLINE_ORIGINAL_MAX_BYTES;
-  const showImage = kind === "image" && (thumb || canInline);
-  const src = showImage ? (thumb ?? d.url) : null;
-  const name = rememberedFilename(d.sha256);
+  const canInline = preview === "image" && d.size <= INLINE_ORIGINAL_MAX_BYTES;
+  const candidate = thumb ?? (canInline ? d.url : null);
+  // Every rendered media URL passes the same trust check (S4): thumbnails,
+  // grid fallbacks and viewer originals are validated identically.
+  const src = candidate && isTrustedUrl(candidate) ? candidate : null;
+  const [imgFailed, setImgFailed] = useState(false);
+  const name = displayNameFor(d);
   const formats: Array<{ fmt: CopyFormat; label: string }> = [
     { fmt: "url", label: "Copy link" },
     { fmt: "md", label: "MD" },
@@ -514,30 +614,31 @@ function Card(
         type="button"
         onClick={(e) => onOpen(e.currentTarget)}
         class="relative h-36 bg-gray-950 flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
-        aria-label={`Open ${name ?? shortHash(d.sha256)}`}
-        title={name ?? d.sha256}
+        aria-label={`Open ${name}`}
+        title={name}
       >
-        {src
+        {src && !imgFailed
           ? (
             <img
               src={src}
-              alt={name ?? shortHash(d.sha256)}
+              alt={name}
               loading="lazy"
+              onError={() => setImgFailed(true)}
               class="h-36 w-full object-cover"
             />
           )
           : (
             <span class="text-3xl" aria-hidden="true">
-              {kind === "video"
+              {preview === "video"
                 ? "🎞️"
-                : kind === "audio"
+                : preview === "audio"
                 ? "🎧"
-                : kind === "gif"
+                : preview === "gif"
                 ? "🖼️"
                 : "📄"}
             </span>
           )}
-        {kind === "video" && (
+        {preview === "video" && (
           <span
             class="absolute inset-0 flex items-center justify-center text-4xl drop-shadow"
             aria-hidden="true"
@@ -545,18 +646,18 @@ function Card(
             ▶️
           </span>
         )}
-        {kind === "image" && !src && (
+        {preview === "image" && src && imgFailed && (
+          <span class="absolute text-[10px] text-gray-500">preview failed</span>
+        )}
+        {category === "image" && preview === "image" && src === null && (
           <span class="absolute bottom-1 text-[10px] text-gray-500">
             click to load
           </span>
         )}
       </button>
       <div class="p-2.5 space-y-1.5">
-        <p
-          class="text-xs text-gray-300 font-mono truncate"
-          title={name ?? d.sha256}
-        >
-          {name ?? `${shortHash(d.sha256)}${extFromUrl(d.url)}`}
+        <p class="text-xs text-gray-300 font-mono truncate" title={name}>
+          {name}
         </p>
         <p class="text-[11px] text-gray-500">
           {d.type ?? "unknown"} · {formatSize(d.size)} ·{" "}
@@ -572,7 +673,7 @@ function Card(
                 <input
                   key={fmt}
                   readOnly
-                  value={copyTextFor(d, fmt)}
+                  value={copyTextFor(d, fmt, name, category === "image" && preview !== "other")}
                   onFocus={(e) => e.currentTarget.select()}
                   class="flex-1 min-w-0 text-[10px] bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300"
                 />
@@ -583,11 +684,9 @@ function Card(
                 key={fmt}
                 type="button"
                 onClick={() => onCopy(fmt)}
-                class={`${
-                  fmt === "url"
-                    ? "flex-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium"
-                    : "px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 text-xs"
-                } rounded ${isCopied ? "text-green-400" : ""}`}
+                class={`${fmt === "url"
+                  ? "flex-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium"
+                  : "px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 text-xs"} rounded ${isCopied ? "text-green-400" : ""}`}
               >
                 {isCopied ? "Copied ✓" : label}
               </button>
@@ -600,7 +699,7 @@ function Card(
 }
 
 function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
-  const kind = kindOf(d);
+  const preview = previewKind(d);
   const trusted = isTrustedUrl(d.url);
   return (
     <div
@@ -608,7 +707,7 @@ function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label={`Viewing ${shortHash(d.sha256)}`}
+      aria-label={`Viewing ${displayNameFor(d)}`}
     >
       <div
         class="bg-gray-900 rounded-xl border border-gray-800 max-w-3xl w-full max-h-[90vh] overflow-auto p-4"
@@ -628,16 +727,18 @@ function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
         <div class="flex items-center justify-center bg-gray-950 rounded-lg mb-3 min-h-40">
           {!trusted
             ? <p class="text-gray-500 text-sm p-6">Untrusted file origin.</p>
-            : kind === "image" || kind === "gif"
-            ? <img src={d.url} alt={shortHash(d.sha256)} class="max-h-[60vh]" />
-            : kind === "video"
+            : preview === "image"
+            ? <img src={d.url} alt={displayNameFor(d)} class="max-h-[60vh]" />
+            : preview === "gif"
+            ? <img src={d.url} alt={displayNameFor(d)} class="max-h-[60vh]" />
+            : preview === "video"
             ? <video src={d.url} controls autoplay class="max-h-[60vh]" />
-            : kind === "audio"
+            : preview === "audio"
             ? <audio src={d.url} controls autoplay class="w-full m-4" />
             : (
               <p class="text-gray-500 text-sm p-6">
-                No inline preview for {d.type ?? "unknown type"}{" "}
-                — use the link below.
+                No inline preview for {d.type ?? "unknown type"} — use the link
+                below.
               </p>
             )}
         </div>

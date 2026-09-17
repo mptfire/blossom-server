@@ -164,10 +164,42 @@ export class ListHttpError extends Error {
  * a cursor whose blob no longer exists (or belongs to another key) returns
  * 400 — surfaced as ListHttpError with status 400 and an X-Reason body.
  */
+const LIST_TIMEOUT_MS = 15000;
+
+const SHA256_RE = /^[0-9a-f]{64}$/;
+
+/** Runtime validation of list responses — a TypeScript cast is not a check
+ * (senior review 2026-09-18, other improvements). */
+function validateDescriptors(data: unknown): BlobDescriptor[] {
+  if (!Array.isArray(data)) throw new Error("list response is not an array");
+  return data.map((entry) => {
+    const d = entry as Record<string, unknown>;
+    if (typeof d.sha256 !== "string" || !SHA256_RE.test(d.sha256)) {
+      throw new Error("list response has an invalid sha256");
+    }
+    if (typeof d.url !== "string" || !/^https?:\/\//.test(d.url)) {
+      throw new Error("list response has an invalid url");
+    }
+    if (typeof d.size !== "number" || !Number.isFinite(d.size) || d.size < 0) {
+      throw new Error("list response has an invalid size");
+    }
+    if (typeof d.uploaded !== "number" || !Number.isFinite(d.uploaded)) {
+      throw new Error("list response has an invalid uploaded timestamp");
+    }
+    return {
+      sha256: d.sha256,
+      size: d.size,
+      type: typeof d.type === "string" ? d.type : null,
+      url: d.url,
+      nip94: Array.isArray(d.nip94) ? d.nip94 : undefined,
+    } as BlobDescriptor;
+  });
+}
+
 export async function listMyBlobs(
   authHeader: string,
   pubkey: string,
-  opts: { cursor?: string; limit?: number } = {},
+  opts: { cursor?: string; limit?: number; timeoutMs?: number } = {},
 ): Promise<BlobDescriptor[]> {
   const url = new URL(`/list/${pubkey}`, globalThis.location.origin);
   if (opts.limit !== undefined) {
@@ -176,9 +208,10 @@ export async function listMyBlobs(
   if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
   const res = await fetch(url, {
     headers: { Authorization: authHeader },
+    signal: AbortSignal.timeout(opts.timeoutMs ?? LIST_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new ListHttpError(res.status, await res.text());
   }
-  return res.json() as Promise<BlobDescriptor[]>;
+  return validateDescriptors(await res.json());
 }

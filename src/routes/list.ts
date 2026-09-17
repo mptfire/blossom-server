@@ -107,8 +107,15 @@ export function buildListRouter(
     const cursor = ctx.req.query("cursor") ?? undefined;
     const rawType = ctx.req.query("type") ?? undefined;
 
-    const limit = rawLimit !== undefined ? parseInt(rawLimit, 10) : undefined;
-    if (limit !== undefined && (isNaN(limit) || limit < 1 || limit > 1000)) {
+    // Strict integer grammar: digits only (parseInt accepted "1.5", "24junk",
+    // "1e3" — senior review 2026-09-18, item C5).
+    const parseStrictInt = (raw: string): number | null =>
+      /^[0-9]{1,13}$/.test(raw) && Number.isSafeInteger(Number(raw))
+        ? Number(raw)
+        : null;
+
+    const limit = rawLimit !== undefined ? parseStrictInt(rawLimit) : undefined;
+    if (limit !== undefined && (limit === null || limit < 1 || limit > 1000)) {
       return errorResponse(
         ctx,
         400,
@@ -134,14 +141,22 @@ export function buildListRouter(
       type = normalized;
     }
 
-    const since = rawSince !== undefined ? parseInt(rawSince, 10) : undefined;
-    if (since !== undefined && isNaN(since)) {
+    const since = rawSince !== undefined ? parseStrictInt(rawSince) : undefined;
+    if (since === null) {
       return errorResponse(ctx, 400, "Invalid since: must be a Unix timestamp");
     }
 
-    const until = rawUntil !== undefined ? parseInt(rawUntil, 10) : undefined;
-    if (until !== undefined && isNaN(until)) {
+    const until = rawUntil !== undefined ? parseStrictInt(rawUntil) : undefined;
+    if (until === null) {
       return errorResponse(ctx, 400, "Invalid until: must be a Unix timestamp");
+    }
+
+    if (since !== undefined && until !== undefined && since > until) {
+      return errorResponse(
+        ctx,
+        400,
+        "Invalid range: since must not be after until",
+      );
     }
 
     if (cursor !== undefined && !HEX_PUBKEY_RE.test(cursor)) {

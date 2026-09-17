@@ -168,23 +168,40 @@ export function friendlyErrorMessage(
 // ---------------------------------------------------------------------------
 
 const FILENAME_KEY = "blossom-filenames";
+// In-memory mirror of the sessionStorage map — avoids a JSON parse of the
+// whole object per card render (senior review 2026-09-18, other improvements).
+const filenameCache = new Map<string, string>();
+let filenameCacheHydrated = false;
 
-export function rememberFilename(hash: string, name: string): void {
+function hydrateFilenameCache(): void {
+  if (filenameCacheHydrated) return;
+  filenameCacheHydrated = true;
   try {
-    const map = JSON.parse(sessionStorage.getItem(FILENAME_KEY) ?? "{}");
-    map[hash] = name;
-    sessionStorage.setItem(FILENAME_KEY, JSON.stringify(map));
+    const raw = sessionStorage.getItem(FILENAME_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    for (const [hash, name] of Object.entries(parsed)) {
+      if (typeof name === "string") filenameCache.set(hash, name);
+    }
   } catch {
     // storage unavailable — names are a nicety, not a requirement
   }
 }
 
-export function rememberedFilename(hash: string): string | null {
+export function rememberFilename(hash: string, name: string): void {
+  hydrateFilenameCache();
+  filenameCache.set(hash, name);
   try {
-    const map = JSON.parse(sessionStorage.getItem(FILENAME_KEY) ?? "{}");
-    const name = map[hash];
-    return typeof name === "string" ? name : null;
+    const raw = sessionStorage.getItem(FILENAME_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    map[hash] = name;
+    sessionStorage.setItem(FILENAME_KEY, JSON.stringify(map));
   } catch {
-    return null;
+    // in-memory value still works for this session
   }
+}
+
+export function rememberedFilename(hash: string): string | null {
+  hydrateFilenameCache();
+  return filenameCache.get(hash) ?? null;
 }

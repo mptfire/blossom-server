@@ -55,6 +55,7 @@ function makeAuth(sk: Uint8Array, opts: AuthOpts = {}): NostrEvent {
     ["expiration", String(opts.expiration ?? now + 600)],
   ];
   if (opts.server) tags.push(["server", opts.server]);
+  if (opts.server) tags.push(["server", opts.server]);
   const event = finalizeEvent(
     {
       kind: 24242,
@@ -371,6 +372,69 @@ Deno.test({
     assertEquals(collected.length, aHashes.length);
     assertEquals(new Set(collected).size, aHashes.length, "no duplicates");
     for (const h of bHashes) assertEquals(collected.includes(h), false);
+  },
+  ...testOpts,
+});
+
+// ---------------------------------------------------------------------------
+// Strict query parsing + positive server-scope acceptance
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name: "list-auth: limit parses strictly (1.5 / 24junk / 1e3 rejected)",
+  async fn() {
+    for (const bad of ["1.5", "24junk", "1e3"]) {
+      const res = await app.fetch(
+        new Request(`http://localhost/list/${pkA}?limit=${bad}`, {
+          headers: { Authorization: encodeAuth(makeAuth(skA)) },
+        }),
+      );
+      assertEquals(res.status, 400, `limit=${bad} must be rejected`);
+      await res.body?.cancel();
+    }
+  },
+  ...testOpts,
+});
+
+Deno.test({
+  name: "list-auth: since > until → 400",
+  async fn() {
+    const res = await app.fetch(
+      new Request(
+        `http://localhost/list/${pkA}?since=2000000000&until=1000000000`,
+        { headers: { Authorization: encodeAuth(makeAuth(skA)) } },
+      ),
+    );
+    assertEquals(res.status, 400);
+    await res.body?.cancel();
+  },
+  ...testOpts,
+});
+
+Deno.test({
+  name: "list-auth: matching server scope → 200 (positive scope test)",
+  async fn() {
+    const now = Math.floor(Date.now() / 1000);
+    const scoped = finalizeEvent(
+      {
+        kind: 24242,
+        created_at: now,
+        tags: [
+          ["t", "list"],
+          ["expiration", String(now + 600)],
+          ["server", "localhost"],
+        ],
+        content: "scoped list",
+      },
+      skA,
+    );
+    const res = await app.fetch(
+      new Request(`http://localhost/list/${pkA}`, {
+        headers: { Authorization: encodeAuth(scoped) },
+      }),
+    );
+    assertEquals(res.status, 200, "correctly scoped tokens must be accepted");
+    await res.body?.cancel();
   },
   ...testOpts,
 });
