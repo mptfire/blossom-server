@@ -52,6 +52,9 @@ function kindOf(
 ): "image" | "gif" | "video" | "audio" | "other" {
   const type = d.type ?? "";
   if (type === "image/gif") return "gif";
+  // SVG is never rendered inline (senior review: generic card even when the
+  // type claims image/*) — SVG served same-origin can carry scripts.
+  if (type === "image/svg+xml") return "other";
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("video/")) return "video";
   if (type.startsWith("audio/")) return "audio";
