@@ -121,7 +121,9 @@ export async function sha256Hex(file: File): Promise<string> {
 }
 
 export function createClientId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${Date.now().toString(36)}-${
+    Math.random().toString(36).slice(2, 10)
+  }`;
 }
 
 export function formatBytes(bytes: number): string {
@@ -149,9 +151,40 @@ const STATUS_MESSAGES: Record<number, string> = {
 };
 
 /** Map an HTTP status code to actionable user-facing text. */
-export function friendlyErrorMessage(status: number, xReason: string | null = null): string {
+export function friendlyErrorMessage(
+  status: number,
+  xReason: string | null = null,
+): string {
   const base = STATUS_MESSAGES[status];
   if (base && xReason) return `${base} \u2014 ${xReason}`;
   if (base) return base;
   return `Error (${status}): ${xReason ?? "Unknown error"}`;
+}
+
+// ---------------------------------------------------------------------------
+// Uploaded-filename memory — the server stores no original filenames, so the
+// client remembers them for the browser session and the gallery shows them
+// instead of hash-soup. (Server-side NIP-94 name support = upstream candidate.)
+// ---------------------------------------------------------------------------
+
+const FILENAME_KEY = "blossom-filenames";
+
+export function rememberFilename(hash: string, name: string): void {
+  try {
+    const map = JSON.parse(sessionStorage.getItem(FILENAME_KEY) ?? "{}");
+    map[hash] = name;
+    sessionStorage.setItem(FILENAME_KEY, JSON.stringify(map));
+  } catch {
+    // storage unavailable — names are a nicety, not a requirement
+  }
+}
+
+export function rememberedFilename(hash: string): string | null {
+  try {
+    const map = JSON.parse(sessionStorage.getItem(FILENAME_KEY) ?? "{}");
+    const name = map[hash];
+    return typeof name === "string" ? name : null;
+  } catch {
+    return null;
+  }
 }

@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from "@hono/hono/jsx/dom";
 import type { MirrorItem, MirrorStatus } from "./types.ts";
 import { HttpError, mirrorPut } from "./api.ts";

@@ -11,6 +11,7 @@ import {
   createClientId,
   friendlyErrorMessage,
   isMediaFile,
+  rememberFilename,
 } from "./helpers.ts";
 import { FileRow } from "./FileRow.tsx";
 
@@ -117,6 +118,25 @@ export function UploadForm({
     setIsDragging(true);
   }, []);
 
+  // Paste-to-upload: images/files on the clipboard land in the queue.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const files: File[] = [];
+      for (const item of e.clipboardData?.items ?? []) {
+        if (item.kind === "file") {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length) {
+        e.preventDefault();
+        addFiles(files);
+      }
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [addFiles]);
+
   const handleDragLeave = useCallback(() => setIsDragging(false), []);
 
   const handleInputChange = useCallback(
@@ -205,6 +225,7 @@ export function UploadForm({
             headers,
             (pct) => patchFile(uf.id, { progress: pct }),
           );
+          rememberFilename(descriptor.sha256, uf.file.name);
           patchFile(uf.id, {
             status: status === 200 ? "exists" : "done",
             progress: 100,
@@ -461,7 +482,9 @@ export function UploadForm({
           ? <p class="text-sm text-gray-400">Drop more files or click to add</p>
           : (
             <div class="space-y-2">
-              <p class="text-gray-300">Drop files here or click to select</p>
+              <p class="text-gray-300">
+                Drop files here, click to select, or paste from clipboard
+              </p>
               <p class="text-xs text-gray-500">
                 {requireAuth
                   ? "Nostr extension required to sign uploads"

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "@hono/hono/jsx/dom";
 import type { BlobDescriptor, NostrProvider } from "./types.ts";
 import { getNostrProvider, signListAuth } from "./auth.ts";
 import { ListHttpError, listMyBlobs } from "./api.ts";
+import { rememberedFilename } from "./helpers.ts";
 
 /** Page size per senior review v1 decision. */
 const PAGE_SIZE = 24;
@@ -86,8 +87,8 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const finished = useRef(false);
   const loadingRef = useRef(false);
   const [loading, setLoading] = useState(false);
-  const [copiedHash, setCopiedHash] = useState<string | null>(null);
-  const [fallbackCopy, setFallbackCopy] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [fallbackKey, setFallbackKey] = useState<string | null>(null);
   const [viewer, setViewer] = useState<BlobDescriptor | null>(null);
   const lastCardRef = useRef<HTMLElement | null>(null);
   // Filters apply to loaded pages; whole-library filtering needs a server
@@ -262,16 +263,20 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     void loadPage(true);
   }
 
-  async function copyUrl(d: BlobDescriptor): Promise<void> {
+  async function copyVariant(
+    d: BlobDescriptor,
+    fmt: CopyFormat,
+  ): Promise<void> {
+    const key = `${d.sha256}:${fmt}`;
     try {
-      await navigator.clipboard.writeText(d.url);
-      setCopiedHash(d.sha256);
-      setFallbackCopy(null);
-      setTimeout(() => setCopiedHash((h) => (h === d.sha256 ? null : h)), 1500);
+      await navigator.clipboard.writeText(copyTextFor(d, fmt));
+      setCopiedKey(key);
+      setFallbackKey(null);
+      setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500);
     } catch {
       // Clipboard unavailable/blocked → selectable field instead (review v1).
-      setFallbackCopy(d.sha256);
-      setCopiedHash(null);
+      setFallbackKey(key);
+      setCopiedKey(null);
     }
   }
 
@@ -324,7 +329,10 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   // ?type= param (upstream candidate for whole-library filtering).
   const visible = descriptors
     .filter((d) => filter === "all" || kindOf(d) === filter)
-    .sort((a, b) => (newestFirst ? b.uploaded - a.uploaded : a.uploaded - b.uploaded));
+    .sort((
+      a,
+      b,
+    ) => (newestFirst ? b.uploaded - a.uploaded : a.uploaded - b.uploaded));
   const filterChips: Array<{
     key: typeof filter;
     label: string;
@@ -415,8 +423,9 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       )}
       {!gridEmpty && visible.length === 0 && (
         <p class="text-center text-gray-500 text-sm mt-4">
-          No {filter === "all" ? "" : filter + " "}files loaded — try Load more
-          or All.
+          No{" "}
+          {filter === "all" ? "" : filter + " "}files loaded — try Load more or
+          All.
         </p>
       )}
 
@@ -425,10 +434,10 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           <Card
             key={d.sha256}
             d={d}
-            copied={copiedHash === d.sha256}
-            showFallbackInput={fallbackCopy === d.sha256}
+            copiedKey={copiedKey}
+            fallbackKey={fallbackKey}
             onOpen={(el) => openViewer(d, el)}
-            onCopy={() => void copyUrl(d)}
+            onCopy={(fmt) => void copyVariant(d, fmt)}
           />
         ))}
       </div>
@@ -454,13 +463,36 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   );
 }
 
+type CopyFormat = "url" | "md" | "html";
+
+function displayName(d: BlobDescriptor): string {
+  return rememberedFilename(d.sha256) ??
+    `${shortHash(d.sha256)}${extFromUrl(d.url)}`;
+}
+
+function copyTextFor(d: BlobDescriptor, fmt: CopyFormat): string {
+  const name = rememberedFilename(d.sha256) ??
+    `${shortHash(d.sha256)}${extFromUrl(d.url)}`;
+  if (fmt === "md") {
+    return kindOf(d) === "image"
+      ? `![${name}](${d.url})`
+      : `[${name}](${d.url})`;
+  }
+  if (fmt === "html") {
+    return kindOf(d) === "image"
+      ? `<img src="${d.url}" alt="${name}">`
+      : `<a href="${d.url}">${name}</a>`;
+  }
+  return d.url;
+}
+
 function Card(
-  { d, copied, showFallbackInput, onOpen, onCopy }: {
+  { d, copiedKey, fallbackKey, onOpen, onCopy }: {
     d: BlobDescriptor;
-    copied: boolean;
-    showFallbackInput: boolean;
+    copiedKey: string | null;
+    fallbackKey: string | null;
     onOpen: (el: HTMLElement) => void;
-    onCopy: () => void;
+    onCopy: (fmt: CopyFormat) => void;
   },
 ) {
   const kind = kindOf(d);
@@ -469,6 +501,12 @@ function Card(
     d.size <= INLINE_ORIGINAL_MAX_BYTES;
   const showImage = kind === "image" && (thumb || canInline);
   const src = showImage ? (thumb ?? d.url) : null;
+  const name = rememberedFilename(d.sha256);
+  const formats: Array<{ fmt: CopyFormat; label: string }> = [
+    { fmt: "url", label: "Copy link" },
+    { fmt: "md", label: "MD" },
+    { fmt: "html", label: "</>" },
+  ];
 
   return (
     <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden flex flex-col">
@@ -476,13 +514,14 @@ function Card(
         type="button"
         onClick={(e) => onOpen(e.currentTarget)}
         class="relative h-36 bg-gray-950 flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
-        aria-label={`Open ${shortHash(d.sha256)}`}
+        aria-label={`Open ${name ?? shortHash(d.sha256)}`}
+        title={name ?? d.sha256}
       >
         {src
           ? (
             <img
               src={src}
-              alt={shortHash(d.sha256)}
+              alt={name ?? shortHash(d.sha256)}
               loading="lazy"
               class="h-36 w-full object-cover"
             />
@@ -513,32 +552,48 @@ function Card(
         )}
       </button>
       <div class="p-2.5 space-y-1.5">
-        <p class="text-xs text-gray-300 font-mono truncate" title={d.sha256}>
-          {shortHash(d.sha256)}
-          {extFromUrl(d.url)}
+        <p
+          class="text-xs text-gray-300 font-mono truncate"
+          title={name ?? d.sha256}
+        >
+          {name ?? `${shortHash(d.sha256)}${extFromUrl(d.url)}`}
         </p>
         <p class="text-[11px] text-gray-500">
           {d.type ?? "unknown"} · {formatSize(d.size)} ·{" "}
           {new Date(d.uploaded * 1000).toLocaleString()}
         </p>
-        {showFallbackInput
-          ? (
-            <input
-              readOnly
-              value={d.url}
-              onFocus={(e) => e.currentTarget.select()}
-              class="w-full text-[10px] bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300"
-            />
-          )
-          : (
-            <button
-              type="button"
-              onClick={onCopy}
-              class="w-full px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium"
-            >
-              {copied ? "Copied ✓" : "Copy link"}
-            </button>
-          )}
+        <div class="flex gap-1.5">
+          {formats.map(({ fmt, label }) => {
+            const key = `${d.sha256}:${fmt}`;
+            const isFallback = fallbackKey === key;
+            const isCopied = copiedKey === key;
+            if (isFallback) {
+              return (
+                <input
+                  key={fmt}
+                  readOnly
+                  value={copyTextFor(d, fmt)}
+                  onFocus={(e) => e.currentTarget.select()}
+                  class="flex-1 min-w-0 text-[10px] bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300"
+                />
+              );
+            }
+            return (
+              <button
+                key={fmt}
+                type="button"
+                onClick={() => onCopy(fmt)}
+                class={`${
+                  fmt === "url"
+                    ? "flex-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium"
+                    : "px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 text-xs"
+                } rounded ${isCopied ? "text-green-400" : ""}`}
+              >
+                {isCopied ? "Copied ✓" : label}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
