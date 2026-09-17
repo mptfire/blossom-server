@@ -172,11 +172,25 @@ export async function touchBlob(
 export async function listBlobsByPubkey(
   db: Client,
   pubkey: string,
-  opts: { limit?: number; cursor?: string; since?: number; until?: number },
+  opts: {
+    limit?: number;
+    cursor?: string;
+    since?: number;
+    until?: number;
+    type?: string;
+  },
 ): Promise<BlobRecord[]> {
   const limit = Math.min(opts.limit ?? 100, 1000);
   const conditions: string[] = ["o.pubkey = ?"];
   const args: (string | number)[] = [pubkey];
+
+  if (opts.type) {
+    // Prefix match on the MIME type. The route validates the charset, but "_"
+    // and "%" are LIKE wildcards — escape "_" explicitly and rely on the
+    // charset (no %) for the rest.
+    conditions.push("b.type LIKE ? ESCAPE '\\'");
+    args.push(opts.type.replace(/_/g, "\\_") + "%");
+  }
 
   if (opts.cursor) {
     // Cursor is the sha256 of the last blob in the previous page. The lookup is

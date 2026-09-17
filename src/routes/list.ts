@@ -105,6 +105,7 @@ export function buildListRouter(
     const rawSince = ctx.req.query("since");
     const rawUntil = ctx.req.query("until");
     const cursor = ctx.req.query("cursor") ?? undefined;
+    const rawType = ctx.req.query("type") ?? undefined;
 
     const limit = rawLimit !== undefined ? parseInt(rawLimit, 10) : undefined;
     if (limit !== undefined && (isNaN(limit) || limit < 1 || limit > 1000)) {
@@ -113,6 +114,24 @@ export function buildListRouter(
         400,
         "Invalid limit: must be an integer between 1 and 1000",
       );
+    }
+
+    // Optional MIME-type prefix filter: /list/<pk>?type=image (→ image/*) or
+    // type=image/png. Charset-validated so the value is safe as a LIKE prefix.
+    let type: string | undefined;
+    if (rawType !== undefined) {
+      const normalized = rawType.toLowerCase().replace(/\/+$/, "");
+      if (
+        !/^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}(\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63})?$/
+          .test(normalized)
+      ) {
+        return errorResponse(
+          ctx,
+          400,
+          "Invalid type: use a MIME type like image or image/png",
+        );
+      }
+      type = normalized;
     }
 
     const since = rawSince !== undefined ? parseInt(rawSince, 10) : undefined;
@@ -140,6 +159,7 @@ export function buildListRouter(
         cursor,
         since,
         until,
+        type,
       });
     } catch (err) {
       // A cursor for a blob that no longer exists (or belongs to another

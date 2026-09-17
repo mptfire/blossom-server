@@ -114,7 +114,11 @@ Deno.test({
     });
     app = await buildApp(db, storage, config);
 
-    async function upload(sk: Uint8Array, content: string): Promise<string> {
+    async function upload(
+      sk: Uint8Array,
+      content: string,
+      contentType = "text/plain",
+    ): Promise<string> {
       const now = Math.floor(Date.now() / 1000);
       const body = new TextEncoder().encode(content);
       const ev = finalizeEvent(
@@ -131,7 +135,7 @@ Deno.test({
           method: "PUT",
           headers: {
             "Content-Length": String(body.byteLength),
-            "Content-Type": "text/plain",
+            "Content-Type": contentType,
             Authorization: `Nostr ${
               encodeBase64Url(new TextEncoder().encode(JSON.stringify(ev)))
             }`,
@@ -152,6 +156,11 @@ Deno.test({
     const shared = await upload(skA, "shared blob — owned by A and B");
     aOwned.push(shared);
     sharedHash.push(shared);
+    // typed blobs for the type-filter tests (content is inert; the declared
+    // Content-Type is what the list filter matches)
+    aOwned.push(await upload(skA, "png bytes", "image/png"));
+    aOwned.push(await upload(skA, "webm bytes", "video/webm"));
+    aOwned.push(await upload(skA, "mp3 bytes", "audio/mpeg"));
     // B uploads identical bytes for the shared blob → dedup hit registers B
     // as a second owner without duplicating the blob.
     await upload(skB, "shared blob — owned by A and B");
@@ -267,9 +276,13 @@ Deno.test({
       assertEquals(guard < 10, true, "pagination must terminate");
     } while (cursor && collected.length < 53);
 
-    assertEquals(pageSizes, [24, 24, 5], "page sizes 24+24+5");
-    assertEquals(collected.length, 53, "every A-owned hash appears");
-    assertEquals(new Set(collected).size, 53, "exactly once (incl. shared)");
+    assertEquals(pageSizes, [24, 24, 8], "page sizes 24+24+8");
+    assertEquals(collected.length, aOwned.length, "every A-owned hash appears");
+    assertEquals(
+      new Set(collected).size,
+      aOwned.length,
+      "exactly once (incl. shared + typed seeds)",
+    );
     assertEquals(
       collected.includes(sharedHash[0]),
       true,
@@ -356,6 +369,52 @@ Deno.test({
     assertEquals(hashes.filter((h) => h === sharedHash[0]).length, 1);
     const expected = aOwned.filter((h) => !deletedByTest.includes(h)).length;
     assertEquals(hashes.length, expected);
+  },
+  ...testOpts,
+});
+
+Deno.test({
+  name:
+    "matrix: type filter — prefix match, pagination combo, invalid rejected",
+  async fn() {
+    // image/*: png + jpg + webp + gif + svg (server is MIME-truthful; svg is
+    // image/svg+xml and the SERVER correctly includes it — the generic-card
+    // treatment is a client rendering policy).
+    const { status: imgStatus, json: imgJson } = await listPage({
+      type: "image",
+      limit: "1000",
+    });
+    assertEquals(imgStatus, 200);
+    const images = imgJson as { sha256: string; type: string }[];
+    assertEquals(images.length, 1);
+    assertEquals(images[0].type, "image/png");
+
+    // video: the single webm
+    const { json: vidJson } = await listPage({ type: "video", limit: "1000" });
+    assertEquals((vidJson as unknown[]).length, 1);
+
+    // audio: the single mp3
+    const { json: audJson } = await listPage({ type: "audio", limit: "1000" });
+    assertEquals((audJson as unknown[]).length, 1);
+
+    // type + pagination combined: image pages at limit 2 → single page of 1
+    const collected: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const params: Record<string, string> = { type: "image", limit: "2" };
+      if (cursor) params.cursor = cursor;
+      const { status, json } = await listPage(params);
+      assertEquals(status, 200);
+      const page = json as { sha256: string }[];
+      for (const d of page) collected.push(d.sha256);
+      cursor = page.length ? page[page.length - 1].sha256 : undefined;
+    } while (cursor);
+    assertEquals(collected.length, 1);
+    assertEquals(new Set(collected).size, 1);
+
+    // invalid type charset → 400
+    const bad = await listPage({ type: "image%22" });
+    assertEquals(bad.status, 400);
   },
   ...testOpts,
 });

@@ -90,6 +90,12 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [fallbackCopy, setFallbackCopy] = useState<string | null>(null);
   const [viewer, setViewer] = useState<BlobDescriptor | null>(null);
   const lastCardRef = useRef<HTMLElement | null>(null);
+  // Filters apply to loaded pages; whole-library filtering needs a server
+  // type param (upstream candidate). Sort re-orders the loaded set.
+  const [filter, setFilter] = useState<
+    "all" | "image" | "video" | "audio" | "other"
+  >("all");
+  const [newestFirst, setNewestFirst] = useState(true);
 
   if (!listEnabled) {
     return (
@@ -314,6 +320,21 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   }
 
   const gridEmpty = descriptors.length === 0 && !loading && !error;
+  // Filters apply to loaded pages; server-side type filtering is the
+  // ?type= param (upstream candidate for whole-library filtering).
+  const visible = descriptors
+    .filter((d) => filter === "all" || kindOf(d) === filter)
+    .sort((a, b) => (newestFirst ? b.uploaded - a.uploaded : a.uploaded - b.uploaded));
+  const filterChips: Array<{
+    key: typeof filter;
+    label: string;
+  }> = [
+    { key: "all", label: "All" },
+    { key: "image", label: "Images" },
+    { key: "video", label: "Videos" },
+    { key: "audio", label: "Audio" },
+    { key: "other", label: "Other" },
+  ];
 
   return (
     <div class="p-4">
@@ -343,6 +364,30 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         </div>
       </div>
 
+      <div class="flex items-center gap-1.5 mb-3 flex-wrap">
+        {filterChips.map((chip) => (
+          <button
+            type="button"
+            onClick={() => setFilter(chip.key)}
+            class={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+              filter === chip.key
+                ? "bg-blue-600 text-white"
+                : "bg-gray-800 text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {chip.label}
+          </button>
+        ))}
+        <span class="flex-1" />
+        <button
+          type="button"
+          onClick={() => setNewestFirst((v) => !v)}
+          class="px-2.5 py-1 rounded-full bg-gray-800 text-gray-400 hover:text-gray-200 text-xs"
+        >
+          {newestFirst ? "Newest first ↓" : "Oldest first ↑"}
+        </button>
+      </div>
+
       {error && (
         <div class="mb-4 p-3 rounded-lg bg-red-950/50 border border-red-900 text-sm text-red-300 flex items-center justify-between gap-3">
           <span>{error.message}</span>
@@ -368,9 +413,15 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           </p>
         </div>
       )}
+      {!gridEmpty && visible.length === 0 && (
+        <p class="text-center text-gray-500 text-sm mt-4">
+          No {filter === "all" ? "" : filter + " "}files loaded — try Load more
+          or All.
+        </p>
+      )}
 
       <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-        {descriptors.map((d) => (
+        {visible.map((d) => (
           <Card
             key={d.sha256}
             d={d}
