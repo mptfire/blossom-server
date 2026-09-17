@@ -47,7 +47,9 @@ function thumbUrl(d: BlobDescriptor): string | null {
   return thumb;
 }
 
-function kindOf(d: BlobDescriptor): "image" | "gif" | "video" | "audio" | "other" {
+function kindOf(
+  d: BlobDescriptor,
+): "image" | "gif" | "video" | "audio" | "other" {
   const type = d.type ?? "";
   if (type === "image/gif") return "gif";
   if (type.startsWith("image/")) return "image";
@@ -69,7 +71,10 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [phase, setPhase] = useState<Phase>("disconnected");
   const [error, setError] = useState<GalleryError | null>(null);
   const [pubkey, setPubkey] = useState<string | null>(null);
-  // Authorization token lives in memory only (senior review item 3).
+  // Auth token + pubkey live in refs (state updates don't apply within the
+  // same tick — the first list request would otherwise request /list/ with an
+  // empty pubkey). Token stays in memory only (senior review item 3).
+  const pubkeyRef = useRef<string | null>(null);
   const tokenRef = useRef<{ header: string; expiresAt: number } | null>(null);
   const [descriptors, setDescriptors] = useState<BlobDescriptor[]>([]);
   const seenHashes = useRef<Set<string>>(new Set());
@@ -102,14 +107,17 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     if (!nostr) {
       const e: GalleryError = {
         kind: "noext",
-        message: "No Nostr extension found. Install nos2x or similar to browse your files.",
+        message:
+          "No Nostr extension found. Install nos2x or similar to browse your files.",
         retryable: false,
       };
       setError(e);
       setPhase("disconnected");
       throw e;
     }
-    const { header, pubkey: signedPubkey, expiresAt } = await signListAuth(nostr);
+    const { header, pubkey: signedPubkey, expiresAt } = await signListAuth(
+      nostr,
+    );
     // Key changed underneath us → previous cards belong to another identity.
     if (pubkey && signedPubkey !== pubkey) {
       setDescriptors([]);
@@ -117,6 +125,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       nextCursor.current = null;
       finished.current = false;
     }
+    pubkeyRef.current = signedPubkey;
     setPubkey(signedPubkey);
     tokenRef.current = { header, expiresAt };
     return header;
@@ -147,7 +156,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     setError(null);
     try {
       const header = await getToken(reauth);
-      const pk = pubkey ?? "";
+      const pk = pubkeyRef.current ?? "";
       const page = await listMyBlobs(header, pk, {
         limit: PAGE_SIZE,
         cursor: reset ? undefined : nextCursor.current ?? undefined,
@@ -279,9 +288,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   if (phase !== "ready") {
     return (
       <div class="p-8 text-center">
-        {error && (
-          <p class="text-red-400 text-sm mb-3">{error.message}</p>
-        )}
+        {error && <p class="text-red-400 text-sm mb-3">{error.message}</p>}
         <button
           type="button"
           onClick={() => void connect()}
@@ -405,7 +412,7 @@ function Card(
   const kind = kindOf(d);
   const thumb = thumbUrl(d);
   const canInline = kind === "image" &&
-      d.size <= INLINE_ORIGINAL_MAX_BYTES;
+    d.size <= INLINE_ORIGINAL_MAX_BYTES;
   const showImage = kind === "image" && (thumb || canInline);
   const src = showImage ? (thumb ?? d.url) : null;
 
@@ -520,8 +527,8 @@ function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
             ? <audio src={d.url} controls autoplay class="w-full m-4" />
             : (
               <p class="text-gray-500 text-sm p-6">
-                No inline preview for {d.type ?? "unknown type"} — use the link
-                below.
+                No inline preview for {d.type ?? "unknown type"}{" "}
+                — use the link below.
               </p>
             )}
         </div>
