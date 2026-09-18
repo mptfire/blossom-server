@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "@hono/hono/jsx/dom";
-import type { BlobDescriptor, NostrProvider } from "./types.ts";
+import type { BlobDescriptor, GalleryError, NostrProvider } from "./types.ts";
 import { getNostrProvider, signListAuth } from "./auth.ts";
 import { ListHttpError, listMyBlobs } from "./api.ts";
 import { rememberedFilename } from "./helpers.ts";
 import { type CopyFormat, copyTextFor } from "./copy-export.ts";
+import { withTimeout } from "./with-timeout.ts";
 
 /** Page size per senior review v1 decision. */
 const PAGE_SIZE = 24;
@@ -118,6 +119,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const abortRef = useRef<AbortController | null>(null);
   const opSeq = useRef(0);
   const [loading, setLoading] = useState(false);
+  const [waitingApproval, setWaitingApproval] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [fallbackKey, setFallbackKey] = useState<string | null>(null);
   const [viewer, setViewer] = useState<BlobDescriptor | null>(null);

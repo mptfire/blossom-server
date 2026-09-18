@@ -164,8 +164,6 @@ export class ListHttpError extends Error {
  * a cursor whose blob no longer exists (or belongs to another key) returns
  * 400 — surfaced as ListHttpError with status 400 and an X-Reason body.
  */
-const LIST_TIMEOUT_MS = 15000;
-
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /** Runtime validation of list responses — a TypeScript cast is not a check
@@ -189,6 +187,7 @@ function validateDescriptors(data: unknown): BlobDescriptor[] {
     return {
       sha256: d.sha256,
       size: d.size,
+      uploaded: d.uploaded,
       type: typeof d.type === "string" ? d.type : null,
       url: d.url,
       nip94: Array.isArray(d.nip94) ? d.nip94 : undefined,
@@ -199,7 +198,11 @@ function validateDescriptors(data: unknown): BlobDescriptor[] {
 export async function listMyBlobs(
   authHeader: string,
   pubkey: string,
-  opts: { cursor?: string; limit?: number; timeoutMs?: number } = {},
+  opts: {
+    cursor?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<BlobDescriptor[]> {
   const url = new URL(`/list/${pubkey}`, globalThis.location.origin);
   if (opts.limit !== undefined) {
@@ -208,7 +211,7 @@ export async function listMyBlobs(
   if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
   const res = await fetch(url, {
     headers: { Authorization: authHeader },
-    signal: AbortSignal.timeout(opts.timeoutMs ?? LIST_TIMEOUT_MS),
+    signal: opts.signal,
   });
   if (!res.ok) {
     throw new ListHttpError(res.status, await res.text());

@@ -21,6 +21,21 @@ export type MirrorStatus =
 
 export type Tab = "upload" | "mirror" | "files";
 
+export interface GalleryError {
+  kind:
+    | "noext"
+    | "rejected"
+    | "forbidden"
+    | "cursor"
+    | "server"
+    | "auth"
+    | "timeout";
+  message: string;
+  retryable: boolean;
+  /** Retry must restart the traversal instead of replaying the failed request. */
+  retryReset?: boolean;
+}
+
 export interface BlobDescriptor {
   sha256: string;
   size: number;
