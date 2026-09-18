@@ -6,15 +6,21 @@
   "compilerOptions": {
     "jsx": "precompile",
     "jsxImportSource": "@hono/hono/jsx",
-    "lib": ["dom", "dom.iterable", "esnext", "deno.ns"]
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext",
+      "deno.ns"
+    ]
   },
   "tasks": {
     "dev": "deno run -P --env-file=.env --watch main.ts",
     "start": "deno run -P --env-file=.env main.ts",
     "test": "deno test -P --env-file=.env tests/unit/ tests/e2e/",
-    "build": "deno task build:client",
+    "build": "deno task build:client:typecheck && deno task build:client",
     "build:client": "deno bundle --frozen --lock=src/landing/client/deno.lock --config src/landing/client/deno.json --minify --platform browser -o public/client.js src/landing/client/index.tsx",
-    "scan": "deno run --allow-env --allow-sys --allow-write --allow-read --allow-run --deny-net npm:aislop scan"
+    "scan": "deno run --allow-env --allow-sys --allow-write --allow-read --allow-run --deny-net npm:aislop scan",
+    "build:client:typecheck": "deno check --config src/landing/client/deno.json src/landing/client/index.tsx"
   },
   "permissions": {
     "default": {
@@ -48,7 +54,9 @@
     "file-type": "npm:file-type@^19.6.0",
     "zod": "npm:zod@^4.3.6"
   },
-  "exclude": ["src/landing/client"],
+  "exclude": [
+    "src/landing/client"
+  ],
   "nodeModulesDir": "auto",
   "vendor": true
 }

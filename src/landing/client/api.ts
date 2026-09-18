@@ -1,4 +1,4 @@
-import type { UploadResult } from "./types.ts";
+import type { BlobDescriptor, UploadResult } from "./types.ts";
 import { friendlyErrorMessage } from "./helpers.ts";
 
 export interface PreflightResult {
@@ -171,6 +171,9 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 function validateDescriptors(data: unknown): BlobDescriptor[] {
   if (!Array.isArray(data)) throw new Error("list response is not an array");
   return data.map((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error("list response contains a non-object entry");
+    }
     const d = entry as Record<string, unknown>;
     if (typeof d.sha256 !== "string" || !SHA256_RE.test(d.sha256)) {
       throw new Error("list response has an invalid sha256");

@@ -41,6 +41,8 @@ export interface BlobDescriptor {
   size: number;
   type: string;
   url: string;
+  /** Unix seconds of first upload (BUD-02 descriptor field). */
+  uploaded: number;
   nip94?: [name: string, value: string, ...rest: string[]][];
 }
 

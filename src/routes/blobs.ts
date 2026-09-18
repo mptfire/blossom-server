@@ -81,8 +81,13 @@ export function buildBlobsRouter(
     // Active-content types are served as downloads, never inline: SVG/HTML
     // served from this origin would execute with application-origin privileges
     // when navigated to directly (senior review 2026-09-18, item S6).
+    // Normalize before the check: lowercase, strip parameters ("; charset=…")
+    // so "IMAGE/SVG+XML; charset=utf-8" is caught too (round-5 finding).
     // nosniff guards the rest against MIME-sniffing drift.
-    const activeDocument = /(?:^|\/)(?:svg\+xml|html|xhtml)$/i.test(mimeType);
+    const normalizedType = mimeType.toLowerCase().split(";")[0].trim();
+    const activeDocument = normalizedType === "image/svg+xml" ||
+      normalizedType === "text/html" ||
+      normalizedType === "application/xhtml+xml";
     const headers: Record<string, string> = {
       "Content-Type": mimeType,
       "Content-Length": String(blob.size),

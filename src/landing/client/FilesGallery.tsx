@@ -132,7 +132,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   // Unmount cleanup: invalidate the session and abort in-flight work.
   useEffect(() => {
     return () => {
-      sessionGen.current++;
+      sessionGen.current!++;
       abortRef.current?.abort();
       activeOp.current = null;
     };
@@ -168,7 +168,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   }
 
   function disconnect(): void {
-    sessionGen.current++; // invalidate all in-flight work (S3)
+    sessionGen.current!++; // invalidate all in-flight work (S3)
     abortRef.current?.abort();
     activeOp.current = null;
     abortRef.current = null;
@@ -185,7 +185,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     const now = Math.floor(Date.now() / 1000);
     if (
       !force && tokenRef.current &&
-      tokenRef.current.expiresAt > now + 30 && gen === sessionGen.current
+      tokenRef.current.expiresAt > now + 30 && gen === sessionGen.current!
     ) {
       return tokenRef.current.header;
     }
@@ -208,7 +208,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     // Superseded while signing (disconnect/identity change) → discard; the
     // caller classifies and restarts as the current identity.
     if (
-      gen !== sessionGen.current ||
+      gen !== sessionGen.current! ||
       (opId !== null && activeOp.current !== opId)
     ) {
       throw new StaleSession();
@@ -216,7 +216,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     // Identity change = atomic boundary: bump the generation so any other
     // in-flight work from the previous identity is discarded too.
     if (pubkeyRef.current && signedPubkey !== pubkeyRef.current) {
-      sessionGen.current++;
+      sessionGen.current!++;
       setDescriptors([]);
       seenHashes.current = new Set();
       nextCursor.current = null;
@@ -238,8 +238,8 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     setError(null);
     setPhase("connecting");
     setWaitingApproval(true);
-    const gen = sessionGen.current;
-    const opId = ++opSeq.current;
+    const gen = sessionGen.current!;
+    const opId = ++opSeq.current!;
     activeOp.current = opId;
     try {
       // One long user-interaction window with Cancel — not a short
@@ -249,13 +249,16 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         APPROVAL_WINDOW_MS,
         "Waiting for the nos2x approval timed out. Dismiss any old prompt and connect again.",
       );
-      if (gen !== sessionGen.current || activeOp.current !== opId) return;
+      if (gen !== sessionGen.current! || activeOp.current !== opId) return;
       setWaitingApproval(false);
       setPhase("ready");
       await loadPage(true, opId);
     } catch (err) {
-      activeOp.current = null;
-      if (err instanceof StaleSession || gen !== sessionGen.current) return;
+      // Only this attempt's owner may release the slot — an old cancelled
+      // connect must never invalidate a newer connection's ownership
+      // (round-5 finding: unconditional clear raced reconnect).
+      if (activeOp.current === opId) activeOp.current = null;
+      if (err instanceof StaleSession || gen !== sessionGen.current!) return;
       if ((err as GalleryError)?.kind === "noext") return; // already handled
       if ((err as Error).name === "AbortError") {
         setError({
@@ -295,25 +298,25 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     let myOp = opId;
     if (myOp === undefined || activeOp.current !== myOp) {
       if (activeOp.current !== null) return; // another operation owns loading
-      myOp = ++opSeq.current;
+      myOp = ++opSeq.current!;
       activeOp.current = myOp;
     }
     setLoading(true);
     setError(null);
     const ac = new AbortController();
     abortRef.current = ac;
-    const gen = sessionGen.current;
+    const gen = sessionGen.current!;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         const header = await getToken(attempt > 0, gen, myOp);
-        if (gen !== sessionGen.current || activeOp.current !== myOp) return;
+        if (gen !== sessionGen.current! || activeOp.current !== myOp) return;
         try {
           const page = await listMyBlobs(header, pubkeyRef.current ?? "", {
             limit: PAGE_SIZE,
             cursor: reset ? undefined : nextCursor.current ?? undefined,
             signal: ac.signal,
           });
-          if (gen !== sessionGen.current || activeOp.current !== myOp) return;
+          if (gen !== sessionGen.current! || activeOp.current !== myOp) return;
           commitPage(page, reset);
           if (page.length < PAGE_SIZE) {
             finished.current = true;
@@ -339,7 +342,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           lastCursor.current = newCursor;
           return;
         } catch (err) {
-          if (gen !== sessionGen.current || activeOp.current !== myOp) return;
+          if (gen !== sessionGen.current! || activeOp.current !== myOp) return;
           // 401 → force re-sign ONCE, inside the loop (senior review §2).
           if (
             err instanceof ListHttpError && err.status === 401 && attempt === 0
@@ -381,8 +384,8 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     setDescriptors((prev) => {
       const next = reset ? [] : [...prev];
       for (const d of page) {
-        if (!seenHashes.current.has(d.sha256)) {
-          seenHashes.current.add(d.sha256);
+        if (!seenHashes.current!.has(d.sha256)) {
+          seenHashes.current!.add(d.sha256);
           next.push(d);
         }
       }
@@ -707,7 +710,7 @@ function Card(
     <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden flex flex-col">
       <button
         type="button"
-        onClick={(e) => onOpen(e.currentTarget)}
+        onClick={(e) => onOpen(e.currentTarget as HTMLElement)}
         class="relative h-36 bg-gray-950 flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
         aria-label={`Open ${name}`}
         title={name}
@@ -774,7 +777,7 @@ function Card(
                     name,
                     category === "image" && preview !== "other",
                   )}
-                  onFocus={(e) => e.currentTarget.select()}
+                  onFocus={(e) => (e.currentTarget as HTMLInputElement).select()}
                   class="flex-1 min-w-0 text-[10px] bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300"
                 />
               );

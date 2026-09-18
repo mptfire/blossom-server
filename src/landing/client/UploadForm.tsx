@@ -172,6 +172,7 @@ export function UploadForm({
               size: uf.file.size,
               type: uf.file.type || "application/octet-stream",
               url: blobUrl,
+              uploaded: Math.floor(Date.now() / 1000),
             };
             patchFile(uf.id, { status: "exists", result: syntheticResult });
             return false;
