@@ -4,11 +4,11 @@
  * Built ahead of time into public/client.js with `deno task build`.
  * Hydrates the #upload-root div rendered by upload-island.tsx (SSR).
  *
- * Nostr signing uses NIP-07 window.nostr, with window.nostr.js providing a
- * NIP-46 fallback when no browser extension is installed.
+ * Nostr signing requires a NIP-07 extension (nos2x, Alby, …). The
+ * window.nostr.js NIP-46 fallback was removed for v1: without a configured
+ * bunker its signEvent never resolves, which left the gallery stuck on
+ * "Connecting…" with no way to recover (senior review 2026-09-18, C6/S-findings).
  */
-import "window.nostr.js";
-
 import { render } from "@hono/hono/jsx/dom";
 import { App } from "./App.tsx";
 
