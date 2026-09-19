@@ -279,6 +279,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   }
 
   function cancelConnect(): void {
+    sessionGen.current!++; // invalidate in-flight signing (late signEvent must not write state)
     abortRef.current?.abort();
     activeOp.current = null;
     setWaitingApproval(false);
@@ -308,7 +309,15 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     const gen = sessionGen.current!;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const header = await getToken(attempt > 0, gen, myOp);
+        let header: string;
+        try {
+          header = await getToken(attempt > 0, gen, myOp);
+        } catch (err) {
+          // Signer rejection, timeout, or stale session — show a clear
+          // error instead of an unhandled rejection (senior review C6).
+          classifyError(err);
+          return;
+        }
         if (gen !== sessionGen.current! || activeOp.current !== myOp) return;
         try {
           const page = await listMyBlobs(header, pubkeyRef.current ?? "", {
@@ -777,7 +786,8 @@ function Card(
                     name,
                     category === "image" && preview !== "other",
                   )}
-                  onFocus={(e) => (e.currentTarget as HTMLInputElement).select()}
+                  onFocus={(e) =>
+                    (e.currentTarget as HTMLInputElement).select()}
                   class="flex-1 min-w-0 text-[10px] bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300"
                 />
               );
