@@ -45,6 +45,37 @@ export async function signBatch(
 }
 
 /**
+ * Build a BUD-02 delete authorization — a kind 24242 event with t="delete"
+ * carrying the target blob's x tag, a server scope, and a short-lived
+ * expiration. The server rejects multi-delete semantics: one event covers
+ * exactly one blob, so a bulk delete signs once per blob (sequential nos2x
+ * prompts with progress shown in the gallery).
+ * Returns the Authorization header value and the signer's pubkey.
+ */
+export async function signDeleteAuth(
+  nostr: NostrProvider,
+  sha256: string,
+  serverOrigin: string,
+): Promise<{ header: string; pubkey: string }> {
+  const now = Math.floor(Date.now() / 1000);
+  const event = (await nostr.signEvent({
+    kind: 24242,
+    content: `delete blob ${sha256.slice(0, 12)}`,
+    created_at: now,
+    tags: [
+      ["t", "delete"],
+      ["x", sha256],
+      ["server", serverOrigin],
+      ["expiration", String(now + 300)],
+    ],
+  })) as { pubkey?: string };
+  return {
+    header: "Nostr " + btoa(JSON.stringify(event)),
+    pubkey: event.pubkey ?? "",
+  };
+}
+
+/**
  * Build a BUD-11 list authorization — a kind 24242 event with t="list",
  * a server scope, and a short-lived expiration. Separate operation
  * authorization from upload: a list token never authorizes uploads and vice

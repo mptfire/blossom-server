@@ -4,6 +4,7 @@
     "jsr:@hono/hono@^4.12.7": "4.12.7",
     "npm:@noble/hashes@^2.2.0": "2.2.0",
     "npm:linkedom@*": "0.18.13",
+    "npm:linkedom@0.18.13": "0.18.13",
     "npm:window.nostr.js@~0.7.1": "0.7.1"
   },
   "jsr": {
@@ -371,6 +372,7 @@
     "dependencies": [
       "jsr:@hono/hono@^4.12.7",
       "npm:@noble/hashes@^2.2.0",
+      "npm:linkedom@0.18.13",
       "npm:window.nostr.js@~0.7.1"
     ]
   }

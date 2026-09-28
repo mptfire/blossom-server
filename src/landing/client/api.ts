@@ -221,3 +221,31 @@ export async function listMyBlobs(
   }
   return validateDescriptors(await res.json());
 }
+
+/**
+ * BUD-02 DELETE /:sha256 — removes the signer's ownership of the blob; the
+ * blob itself is purged only when no other owners remain (server semantics).
+ * The Authorization header must be a t="delete" token whose x tag carries
+ * this exact hash (see signDeleteAuth — one event per blob, no multi-delete).
+ * 404 counts as success: the blob is already gone.
+ */
+export async function deleteBlob(
+  sha256: string,
+  authHeader: string,
+  signal?: AbortSignal,
+): Promise<{ status: number; alreadyGone: boolean }> {
+  const res = await fetch(`/${sha256}`, {
+    method: "DELETE",
+    headers: { Authorization: authHeader },
+    signal,
+  });
+  if (res.status === 404) return { status: 404, alreadyGone: true };
+  if (!res.ok) {
+    const xReason = res.headers.get("X-Reason");
+    throw new HttpError(
+      res.status,
+      friendlyErrorMessage(res.status, xReason),
+    );
+  }
+  return { status: res.status, alreadyGone: false };
+}

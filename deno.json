@@ -16,7 +16,9 @@
   "tasks": {
     "dev": "deno run -P --env-file=.env --watch main.ts",
     "start": "deno run -P --env-file=.env main.ts",
-    "test": "deno test -P --env-file=.env tests/unit/ tests/e2e/",
+    "test": "deno task test:server && deno task test:client",
+    "test:server": "deno test -P --env-file=.env tests/unit/ tests/e2e/",
+    "test:client": "deno test --config src/landing/client/deno.json --allow-all tests/client/",
     "build": "deno task build:client:typecheck && deno task build:client",
     "build:client": "deno bundle --frozen --lock=src/landing/client/deno.lock --config src/landing/client/deno.json --minify --platform browser -o public/client.js src/landing/client/index.tsx",
     "scan": "deno run --allow-env --allow-sys --allow-write --allow-read --allow-run --deny-net npm:aislop scan",
@@ -52,6 +54,7 @@
     "nostr-tools": "npm:nostr-tools@^2.23.3",
     "sharp": "npm:sharp@^0.35.3",
     "file-type": "npm:file-type@^19.6.0",
+    "linkedom": "npm:linkedom@0.18.13",
     "zod": "npm:zod@^4.3.6"
   },
   "exclude": [

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "@hono/hono/jsx/dom";
 import type { BlobDescriptor, GalleryError, NostrProvider } from "./types.ts";
-import { getNostrProvider, signListAuth } from "./auth.ts";
-import { ListHttpError, listMyBlobs } from "./api.ts";
+import { getNostrProvider, signDeleteAuth, signListAuth } from "./auth.ts";
+import { deleteBlob, ListHttpError, listMyBlobs } from "./api.ts";
 import { rememberedFilename } from "./helpers.ts";
 import { type CopyFormat, copyTextFor } from "./copy-export.ts";
 import { withTimeout } from "./with-timeout.ts";
@@ -17,6 +17,8 @@ const APPROVAL_WINDOW_MS = 120000;
 type Phase = "disconnected" | "connecting" | "ready";
 
 type FilterKind = "all" | "image" | "video" | "audio" | "other";
+
+type SortKey = "newest" | "oldest" | "name" | "size";
 
 /** Marker: the session was superseded while work was in flight. */
 class StaleSession extends Error {
@@ -122,12 +124,25 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [waitingApproval, setWaitingApproval] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [fallbackKey, setFallbackKey] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<BlobDescriptor | null>(null);
+  // Viewer is an index into the current visible list so prev/next can walk it.
+  const [viewerIdx, setViewerIdx] = useState<number | null>(null);
+  const [zoomed, setZoomed] = useState(false);
   const lastCardRef = useRef<HTMLElement | null>(null);
   // Restored — these were dropped during the security refactor, which made
   // the connected view throw ReferenceError after a successful sign-in.
   const [filter, setFilter] = useState<FilterKind>("all");
-  const [newestFirst, setNewestFirst] = useState(true);
+  const [sortKey, setSortKey] = useState<SortKey>("newest");
+  // Sprint 1+2: search, bulk select, delete (client-side over loaded pages).
+  const [query, setQuery] = useState("");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmHashes, setConfirmHashes] = useState<string[] | null>(null);
+  const [deleteProgress, setDeleteProgress] = useState<
+    { done: number; total: number } | null
+  >(null);
+  const [notice, setNotice] = useState<
+    { kind: "ok" | "err"; text: string } | null
+  >(null);
 
   // Unmount cleanup: invalidate the session and abort in-flight work.
   useEffect(() => {
@@ -162,9 +177,16 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     setError(null);
     setCopiedKey(null);
     setFallbackKey(null);
-    setViewer(null);
+    setViewerIdx(null);
+    setZoomed(false);
     setFilter("all");
-    setNewestFirst(true);
+    setSortKey("newest");
+    setQuery("");
+    setSelectMode(false);
+    setSelected(new Set());
+    setConfirmHashes(null);
+    setDeleteProgress(null);
+    setNotice(null);
   }
 
   function disconnect(): void {
@@ -224,9 +246,13 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       finished.current = false;
       setCopiedKey(null);
       setFallbackKey(null);
-      setViewer(null);
+      setViewerIdx(null);
+      setZoomed(false);
       setFilter("all");
-      setNewestFirst(true);
+      setSortKey("newest");
+      setQuery("");
+      setSelectMode(false);
+      setSelected(new Set());
     }
     pubkeyRef.current = signedPubkey;
     setPubkey(signedPubkey);
@@ -259,6 +285,9 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       // (round-5 finding: unconditional clear raced reconnect).
       if (activeOp.current === opId) activeOp.current = null;
       if (err instanceof StaleSession || gen !== sessionGen.current!) return;
+      // This attempt still owns the UI — clear the approval gate or the
+      // Retry link stays hidden behind `!waitingApproval` forever.
+      setWaitingApproval(false);
       if ((err as GalleryError)?.kind === "noext") return; // already handled
       if ((err as Error).name === "AbortError") {
         setError({
@@ -473,18 +502,165 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
 
   function openViewer(d: BlobDescriptor, el: HTMLElement): void {
     lastCardRef.current = el;
-    setViewer(d);
+    const idx = computeVisible().findIndex((x) => x.sha256 === d.sha256);
+    setZoomed(false);
+    setViewerIdx(idx >= 0 ? idx : null);
   }
 
   function closeViewer(): void {
-    setViewer(null); // unmounts any <video>/<audio> → playback stops
+    setViewerIdx(null);
+    setZoomed(false); // unmounts any <video>/<audio> → playback stops
     lastCardRef.current?.focus();
   }
 
+  function stepViewer(dir: number): void {
+    setZoomed(false);
+    setViewerIdx((i) => {
+      if (i === null) return null;
+      const n = i + dir;
+      return n >= 0 && n < computeVisible().length ? n : i;
+    });
+  }
+
+  /** Shared visible-list computation — render body, select-all and viewer
+   * navigation must all agree on what is currently shown. */
+  function computeVisible(): BlobDescriptor[] {
+    const q = query.trim().toLowerCase();
+    const filtered = descriptors
+      .filter((d) => filter === "all" || categoryOf(d) === filter)
+      .filter((d) => {
+        if (!q) return true;
+        return displayNameFor(d).toLowerCase().includes(q) ||
+          d.sha256.includes(q);
+      });
+    const by: Record<SortKey, (a: BlobDescriptor, b: BlobDescriptor) => number> =
+      {
+        newest: (a, b) => b.uploaded - a.uploaded,
+        oldest: (a, b) => a.uploaded - b.uploaded,
+        name: (a, b) => displayNameFor(a).localeCompare(displayNameFor(b)),
+        size: (a, b) => b.size - a.size,
+      };
+    return filtered.sort(by[sortKey]);
+  }
+
+  function toggleSelected(hash: string, on: boolean): void {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(hash);
+      else next.delete(hash);
+      return next;
+    });
+  }
+
+  function confirmDelete(hashes: string[]): void {
+    if (hashes.length === 0 || deleteProgress) return;
+    setConfirmHashes(hashes);
+  }
+
+  /** Plain clipboard write with a visible-failure notice (no silent loss). */
+  function copy(text: string): void {
+    navigator.clipboard?.writeText(text).then(() => {
+      setNotice({ kind: "ok", text: "Copied to clipboard." });
+    }, () => {
+      setNotice({ kind: "err", text: "Clipboard blocked by the browser." });
+    });
+  }
+
+  function exitSelectMode(): void {
+    setSelectMode(false);
+    setSelected(new Set());
+  }
+
+  /** Server contract: one signed delete event per blob (no multi-delete), so
+   * a batch signs sequentially — one nos2x prompt per file, progress shown.
+   * Stops at the first failure; un-deleted files stay selected for retry. */
+  async function performDelete(): Promise<void> {
+    const hashes = confirmHashes;
+    if (!hashes || hashes.length === 0 || deleteProgress) return;
+    setConfirmHashes(null);
+    setDeleteProgress({ done: 0, total: hashes.length });
+    const gen = sessionGen.current!;
+    const nostr = getNostrProvider();
+    if (!nostr) {
+      setDeleteProgress(null);
+      setNotice({ kind: "err", text: "No Nostr extension found." });
+      return;
+    }
+    let done = 0;
+    const removed: string[] = [];
+    try {
+      for (const hash of hashes) {
+        if (gen !== sessionGen.current!) return; // superseded mid-batch
+        try {
+          const { header } = await withTimeout(
+            signDeleteAuth(nostr, hash, globalThis.location.origin),
+            APPROVAL_WINDOW_MS,
+            "Waiting for the nos2x approval timed out. Dismiss any old prompt and try again.",
+          );
+          if (gen !== sessionGen.current!) return;
+          await deleteBlob(hash, header);
+          removed.push(hash);
+        } catch (err) {
+          if ((err as Error).name === "AbortError") return;
+          const reason = err instanceof Error ? err.message : String(err);
+          setNotice({
+            kind: "err",
+            text: `Deleted ${removed.length} of ${hashes.length} — stopped: ${reason}`,
+          });
+          return;
+        } finally {
+          done++;
+          setDeleteProgress({ done, total: hashes.length });
+        }
+      }
+    } finally {
+      setDeleteProgress(null);
+    }
+    // Capture the open viewer's file BEFORE removal — descriptors state still
+    // holds the pre-delete list in this closure, so viewerIdx resolves to the
+    // actually-open blob. Close the viewer if that blob was deleted (indices
+    // shift after removal, so a stale index would show the wrong file).
+    const openHash = viewerIdx !== null
+      ? computeVisible()[viewerIdx]?.sha256 ?? null
+      : null;
+    if (removed.length > 0) {
+      const gone = new Set(removed);
+      setDescriptors((prev) => prev.filter((d) => !gone.has(d.sha256)));
+      for (const h of removed) seenHashes.current!.delete(h);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const h of removed) next.delete(h);
+        return next;
+      });
+      if (openHash && gone.has(openHash)) {
+        setViewerIdx(null);
+        setZoomed(false);
+      }
+    }
+    setNotice({
+      kind: "ok",
+      text:
+        `Deleted ${removed.length} file${removed.length === 1 ? "" : "s"}.`,
+    });
+  }
+
   useEffect(() => {
-    if (!viewer) return;
+    // Confirm dialog open → Esc cancels, Enter confirms (destructive default
+    // deliberately NOT on Enter for safety — Enter only confirms when the
+    // dialog's own button holds focus). Viewer open → Esc/arrows/Z.
+    if (confirmHashes) {
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === "Escape") setConfirmHashes(null);
+      };
+      globalThis.addEventListener("keydown", onKey);
+      return () => globalThis.removeEventListener("keydown", onKey);
+    }
+    if (viewerIdx === null) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeViewer();
+      if (e.key === "ArrowLeft") stepViewer(-1);
+      if (e.key === "ArrowRight") stepViewer(1);
+      if (e.key === "z" || e.key === "Z") setZoomed((v) => !v);
       // Minimal focus containment: keep Tab cycling inside the dialog.
       if (e.key === "Tab") {
         const focusables = document.querySelectorAll<HTMLElement>(
@@ -504,7 +680,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     };
     globalThis.addEventListener("keydown", onKey);
     return () => globalThis.removeEventListener("keydown", onKey);
-  }, [viewer]);
+  }, [viewerIdx, confirmHashes]);
 
   if (phase !== "ready") {
     return (
@@ -549,20 +725,24 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   }
 
   const gridEmpty = descriptors.length === 0 && !loading && !error;
-  // Filters apply to loaded pages; server-side type filtering is the
-  // ?type= param (upstream candidate for whole-library filtering).
-  const visible = descriptors
-    .filter((d) => filter === "all" || categoryOf(d) === filter)
-    .sort((
-      a,
-      b,
-    ) => (newestFirst ? b.uploaded - a.uploaded : a.uploaded - b.uploaded));
+  // Filters/search/sort apply to loaded pages; server-side type filtering is
+  // the ?type= param (upstream candidate for whole-library filtering).
+  const visible = computeVisible();
+  const viewer = viewerIdx !== null && viewerIdx < visible.length
+    ? visible[viewerIdx]
+    : null;
   const filterChips: Array<{ key: FilterKind; label: string }> = [
     { key: "all", label: "All" },
     { key: "image", label: "Images" },
     { key: "video", label: "Videos" },
     { key: "audio", label: "Audio" },
     { key: "other", label: "Other" },
+  ];
+  const sortOptions: Array<{ key: SortKey; label: string }> = [
+    { key: "newest", label: "Newest first ↓" },
+    { key: "oldest", label: "Oldest first ↑" },
+    { key: "name", label: "Name A–Z" },
+    { key: "size", label: "Size ↓" },
   ];
 
   return (
@@ -577,8 +757,21 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         <div class="flex gap-2">
           <button
             type="button"
+            onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
+            disabled={deleteProgress !== null}
+            aria-pressed={selectMode ? "true" : "false"}
+            class={`px-3 py-1.5 rounded-lg border text-xs font-medium disabled:opacity-50 ${
+              selectMode
+                ? "border-blue-500 text-blue-300 bg-blue-950/40"
+                : "border-gray-700 hover:border-gray-500 text-gray-300"
+            }`}
+          >
+            {selectMode ? "Cancel select" : "Select"}
+          </button>
+          <button
+            type="button"
             onClick={refresh}
-            disabled={loading}
+            disabled={loading || deleteProgress !== null}
             class="px-3 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium disabled:opacity-50"
           >
             Refresh
@@ -594,10 +787,18 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       </div>
 
       <div class="flex items-center gap-1.5 mb-3 flex-wrap">
+        <input
+          type="search"
+          value={query}
+          onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
+          placeholder="Search by name or hash…"
+          aria-label="Search loaded files by name or hash"
+          class="flex-1 min-w-40 bg-gray-900 border border-gray-800 rounded-lg px-3 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-blue-600"
+        />
         {filterChips.map((chip) => (
           <button
             type="button"
-            aria-pressed={filter === chip.key}
+            aria-pressed={filter === chip.key ? "true" : "false"}
             onClick={() => setFilter(chip.key)}
             class={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
               filter === chip.key
@@ -609,15 +810,42 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           </button>
         ))}
         <span class="flex-1" />
-        <button
-          type="button"
-          onClick={() => setNewestFirst((v) => !v)}
-          class="px-2.5 py-1 rounded-full bg-gray-800 text-gray-400 hover:text-gray-200 text-xs"
+        {/* Selection is driven by the options' `selected` prop — a controlled
+        `value` on <select> breaks under linkedom-based test DOMs (getter-only
+        select.value there); browsers sync the display from option.selected. */}
+        <select
+          onChange={(e) => setSortKey((e.currentTarget as HTMLSelectElement).value as SortKey)}
+          aria-label="Sort loaded files"
           title="Sort applies to the files loaded so far — use Load more for the rest"
+          class="px-2.5 py-1 rounded-full bg-gray-800 text-gray-400 hover:text-gray-200 text-xs border-none"
         >
-          {newestFirst ? "Newest first ↓" : "Oldest first ↑"}
-        </button>
+          {sortOptions.map((o) => (
+            <option key={o.key} value={o.key} selected={sortKey === o.key}>
+              {o.label}
+            </option>
+          ))}
+        </select>
       </div>
+
+      {notice && (
+        <div
+          class={`mb-4 p-3 rounded-lg border text-sm flex items-center justify-between gap-3 ${
+            notice.kind === "ok"
+              ? "bg-green-950/50 border-green-900 text-green-300"
+              : "bg-red-950/50 border-red-900 text-red-300"
+          }`}
+        >
+          <span>{notice.text}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss message"
+            class="text-gray-400 hover:text-gray-200 text-xs"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {error && (
         <div class="mb-4 p-3 rounded-lg bg-red-950/50 border border-red-900 text-sm text-red-300 flex items-center justify-between gap-3">
@@ -651,20 +879,24 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       {!gridEmpty && visible.length === 0 && (
         <p class="text-center text-gray-500 text-sm mt-4">
           No{" "}
-          {filter === "all" ? "" : filter + " "}files loaded — try Load more or
-          All.
+          {filter === "all" ? "" : filter + " "}files match — adjust the search,
+          filter, or use Load more.
         </p>
       )}
 
-      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      <div class={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 ${selectMode ? "pb-20" : ""}`}>
         {visible.map((d) => (
           <Card
             key={d.sha256}
             d={d}
             copiedKey={copiedKey}
             fallbackKey={fallbackKey}
+            selectMode={selectMode}
+            selected={selected.has(d.sha256)}
             onOpen={(el) => openViewer(d, el)}
             onCopy={(fmt) => void copyVariant(d, fmt)}
+            onToggle={(on) => toggleSelected(d.sha256, on)}
+            onDelete={() => confirmDelete([d.sha256])}
           />
         ))}
       </div>
@@ -674,7 +906,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           <button
             type="button"
             onClick={() => void loadPage(false)}
-            disabled={loading}
+            disabled={loading || deleteProgress !== null}
             class="px-4 py-2 rounded-lg border border-gray-700 hover:border-gray-500 text-gray-300 text-sm disabled:opacity-50"
           >
             {loading ? "Loading…" : "Load more"}
@@ -685,18 +917,125 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         <p class="text-center text-gray-500 text-sm mt-4">Loading files…</p>
       )}
 
-      {viewer && <Viewer d={viewer} onClose={closeViewer} />}
+      {selectMode && (
+        <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 shadow-2xl flex items-center gap-2 flex-wrap justify-center">
+          <span class="text-xs text-gray-300 mr-1">
+            {deleteProgress
+              ? `Deleting ${deleteProgress.done}/${deleteProgress.total}… approve each prompt`
+              : `${selected.size} selected`}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set(visible.map((d) => d.sha256)))}
+            disabled={deleteProgress !== null || visible.length === 0}
+            class="px-3 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium disabled:opacity-50"
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set())}
+            disabled={deleteProgress !== null || selected.size === 0}
+            class="px-3 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium disabled:opacity-50"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              copy(
+                visible.filter((d) => selected.has(d.sha256)).map((d) => d.url)
+                  .join("\n"),
+              )}
+            disabled={deleteProgress !== null || selected.size === 0}
+            class="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium disabled:opacity-50"
+          >
+            Copy URLs
+          </button>
+          <button
+            type="button"
+            onClick={() => confirmDelete(visible.filter((d) => selected.has(d.sha256)).map((d) => d.sha256))}
+            disabled={deleteProgress !== null || selected.size === 0}
+            class="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-medium disabled:opacity-50"
+          >
+            Delete
+          </button>
+        </div>
+      )}
+
+      {confirmHashes && (
+        <div
+          class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm delete"
+        >
+          <div class="bg-gray-900 rounded-xl border border-gray-800 max-w-md w-full p-6 text-center">
+            <h3 class="text-base font-medium mb-2">
+              {confirmHashes.length === 1
+                ? "Delete this file?"
+                : `Delete ${confirmHashes.length} files?`}
+            </h3>
+            <p class="text-xs text-gray-500 mb-1">
+              {confirmHashes.length === 1
+                ? "This removes your ownership of the blob — the file is purged only if no other owner remains."
+                : "Each delete signs one nos2x prompt per file (server contract: one event per blob). The file is purged only if no other owner remains."}
+            </p>
+            <p class="text-xs text-gray-400 font-mono truncate mb-4">
+              {confirmHashes.slice(0, 3).map(shortHash).join(", ")}
+              {confirmHashes.length > 3
+                ? ` +${confirmHashes.length - 3} more`
+                : ""}
+            </p>
+            <div class="flex justify-center gap-2">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setConfirmHashes(null)}
+                class="px-4 py-2 rounded-lg border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium"
+              >
+                Cancel (Esc)
+              </button>
+              <button
+                type="button"
+                onClick={() => void performDelete()}
+                class="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-medium"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewer && (
+        <Viewer
+          d={viewer}
+          zoomed={zoomed}
+          onZoomToggle={() => setZoomed((v) => !v)}
+          position={{ index: viewerIdx ?? 0, total: visible.length }}
+          hasPrev={(viewerIdx ?? 0) > 0}
+          hasNext={(viewerIdx ?? 0) < visible.length - 1}
+          onNav={(dir) => stepViewer(dir)}
+          onDelete={() => confirmDelete([viewer.sha256])}
+          onClose={closeViewer}
+        />
+      )}
     </div>
   );
 }
 
 function Card(
-  { d, copiedKey, fallbackKey, onOpen, onCopy }: {
+  { d, copiedKey, fallbackKey, selectMode, selected, onOpen, onCopy, onToggle, onDelete }: {
     d: BlobDescriptor;
     copiedKey: string | null;
     fallbackKey: string | null;
+    selectMode: boolean;
+    selected: boolean;
     onOpen: (el: HTMLElement) => void;
     onCopy: (fmt: CopyFormat) => void;
+    onToggle: (on: boolean) => void;
+    onDelete: () => void;
   },
 ) {
   const preview = previewKind(d);
@@ -716,12 +1055,45 @@ function Card(
   ];
 
   return (
-    <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden flex flex-col">
+    <div
+      class={`bg-gray-900 rounded-xl border overflow-hidden flex flex-col relative ${
+        selected ? "border-blue-500" : "border-gray-800"
+      }`}
+    >
+      {/* Select-mode checkbox — top-left overlay */}
+      {selectMode && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onToggle((e.currentTarget as HTMLInputElement).checked)}
+          aria-label={`Select ${name}`}
+          class="absolute top-2 left-2 z-10 w-5 h-5 accent-blue-600 cursor-pointer"
+        />
+      )}
+      {/* Single-file delete — top-right overlay, hidden in select mode */}
+      {!selectMode && (
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label={`Delete ${name}`}
+          title="Delete"
+          class="absolute top-2 right-2 z-10 w-7 h-7 rounded-lg bg-gray-950/85 border border-gray-700 text-red-400 hover:text-red-300 hover:border-red-500 opacity-0 hover:opacity-100 focus:opacity-100 transition-opacity text-sm leading-none"
+        >
+          🗑
+        </button>
+      )}
       <button
         type="button"
-        onClick={(e) => onOpen(e.currentTarget as HTMLElement)}
+        onClick={(e) => {
+          // In select mode the thumbnail toggles selection instead of opening
+          if (selectMode) {
+            onToggle(!selected);
+            return;
+          }
+          onOpen(e.currentTarget as HTMLElement);
+        }}
         class="relative h-36 bg-gray-950 flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
-        aria-label={`Open ${name}`}
+        aria-label={`${selectMode ? "Toggle selection of" : "Open"} ${name}`}
         title={name}
       >
         {src && !imgFailed
@@ -813,9 +1185,22 @@ function Card(
   );
 }
 
-function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
+function Viewer(
+  { d, zoomed, onZoomToggle, position, hasPrev, hasNext, onNav, onDelete, onClose }: {
+    d: BlobDescriptor;
+    zoomed: boolean;
+    onZoomToggle: () => void;
+    position: { index: number; total: number };
+    hasPrev: boolean;
+    hasNext: boolean;
+    onNav: (dir: number) => void;
+    onDelete: () => void;
+    onClose: () => void;
+  },
+) {
   const preview = previewKind(d);
   const trusted = isTrustedUrl(d.url);
+  const zoomable = trusted && (preview === "image" || preview === "gif");
   return (
     <div
       class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
@@ -824,12 +1209,44 @@ function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
       aria-modal="true"
       aria-label={`Viewing ${displayNameFor(d)}`}
     >
+      {/* Prev/next arrows — overlay the backdrop edges */}
+      {hasPrev && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onNav(-1);
+          }}
+          aria-label="Previous file (left arrow)"
+          class="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-gray-900/90 border border-gray-700 hover:border-gray-500 text-gray-200 text-xl"
+        >
+          ‹
+        </button>
+      )}
+      {hasNext && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onNav(1);
+          }}
+          aria-label="Next file (right arrow)"
+          class="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-gray-900/90 border border-gray-700 hover:border-gray-500 text-gray-200 text-xl"
+        >
+          ›
+        </button>
+      )}
       <div
         class="bg-gray-900 rounded-xl border border-gray-800 max-w-3xl w-full max-h-[90vh] overflow-auto p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <div class="flex items-center justify-between mb-3">
-          <p class="text-xs text-gray-300 font-mono truncate">{d.sha256}</p>
+        <div class="flex items-center justify-between mb-3 gap-2">
+          <p class="text-xs text-gray-300 font-mono truncate flex-1">
+            {displayNameFor(d)}
+            <span class="text-gray-600 ml-2">
+              {position.index + 1}/{position.total}
+            </span>
+          </p>
           <button
             type="button"
             autoFocus
@@ -839,13 +1256,19 @@ function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
             Close (Esc)
           </button>
         </div>
-        <div class="flex items-center justify-center bg-gray-950 rounded-lg mb-3 min-h-40">
+        <div class="flex items-center justify-center bg-gray-950 rounded-lg mb-3 min-h-40 overflow-hidden">
           {!trusted
             ? <p class="text-gray-500 text-sm p-6">Untrusted file origin.</p>
-            : preview === "image"
-            ? <img src={d.url} alt={displayNameFor(d)} class="max-h-[60vh]" />
-            : preview === "gif"
-            ? <img src={d.url} alt={displayNameFor(d)} class="max-h-[60vh]" />
+            : preview === "image" || preview === "gif"
+            ? (
+              <img
+                src={d.url}
+                alt={displayNameFor(d)}
+                class={`max-h-[60vh] transition-transform ${
+                  zoomed ? "scale-200 cursor-grab" : ""
+                }`}
+              />
+            )
             : preview === "video"
             ? <video src={d.url} controls autoplay class="max-h-[60vh]" />
             : preview === "audio"
@@ -862,14 +1285,40 @@ function Viewer({ d, onClose }: { d: BlobDescriptor; onClose: () => void }) {
             {d.type ?? "unknown"} · {formatSize(d.size)} ·{" "}
             {new Date(d.uploaded * 1000).toLocaleString()}
           </p>
-          <a
-            href={trusted ? d.url : undefined}
-            target="_blank"
-            rel="noreferrer"
-            class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
-          >
-            Open original ↗
-          </a>
+          <div class="flex gap-2 flex-wrap">
+            {zoomable && (
+              <button
+                type="button"
+                onClick={onZoomToggle}
+                aria-pressed={zoomed ? "true" : "false"}
+                class="px-3 py-1.5 rounded border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium"
+              >
+                {zoomed ? "Zoom out (Z)" : "Zoom in (Z)"}
+              </button>
+            )}
+            <a
+              href={trusted ? d.url : undefined}
+              download={displayNameFor(d)}
+              class="px-3 py-1.5 rounded border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium"
+            >
+              Download
+            </a>
+            <a
+              href={trusted ? d.url : undefined}
+              target="_blank"
+              rel="noreferrer"
+              class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
+            >
+              Open original ↗
+            </a>
+            <button
+              type="button"
+              onClick={onDelete}
+              class="px-3 py-1.5 rounded bg-red-600 hover:bg-red-500 text-white text-xs font-medium"
+            >
+              Delete
+            </button>
+          </div>
         </div>
       </div>
     </div>

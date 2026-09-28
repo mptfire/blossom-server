@@ -2,7 +2,6 @@ import { useEffect, useState } from "@hono/hono/jsx/dom";
 import type { Tab } from "./types.ts";
 import { UploadForm } from "./UploadForm.tsx";
 import { MirrorForm } from "./MirrorForm.tsx";
-import { FilesGallery } from "./FilesGallery.tsx";
 
 export function App({
   requireAuth,
@@ -45,7 +44,8 @@ export function App({
 
   return (
     <div>
-      {/* Tab bar — rendered when any secondary tab exists */}
+      {/* Tab bar — rendered when any secondary tab exists. My Files moved to
+      its own full-width page (GET /files); the tab is an outbound link now. */}
       {showTabBar && (
         <div class="flex border-b border-gray-800 px-6 pt-4">
           <button
@@ -65,13 +65,12 @@ export function App({
             </button>
           )}
           {listEnabled && (
-            <button
-              type="button"
-              class={tabClass("files")}
-              onClick={() => setActiveTab("files")}
+            <a
+              href="/files"
+              class="px-4 py-2 text-sm font-medium transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300"
             >
-              My Files
-            </button>
+              My Files ↗
+            </a>
           )}
         </div>
       )}
@@ -91,9 +90,6 @@ export function App({
           requireAuth={mirrorRequireAuth}
           onQueueChange={setMirrorHasItems}
         />
-      )}
-      {activeTab === "files" && listEnabled && (
-        <FilesGallery listEnabled={listEnabled} />
       )}
     </div>
   );

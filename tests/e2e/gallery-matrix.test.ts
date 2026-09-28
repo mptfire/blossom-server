@@ -19,7 +19,6 @@ import type { Hono } from "@hono/hono";
 import { assertEquals } from "@std/assert";
 import { encodeBase64Url } from "@std/encoding/base64url";
 import { join } from "@std/path";
-import type { NostrEvent } from "nostr-tools";
 import {
   finalizeEvent,
   generateSecretKey,
@@ -35,7 +34,6 @@ import { initPool } from "../../src/workers/pool.ts";
 const skA = generateSecretKey();
 const pkA = getPublicKey(skA);
 const skB = generateSecretKey();
-const pkB = getPublicKey(skB);
 
 function authHeader(
   sk: Uint8Array,

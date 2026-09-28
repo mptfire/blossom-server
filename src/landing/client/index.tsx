@@ -2,7 +2,9 @@
  * Client-side entry point — runs in the browser.
  *
  * Built ahead of time into public/client.js with `deno task build`.
- * Hydrates the #upload-root div rendered by upload-island.tsx (SSR).
+ * Two mount points, one bundle:
+ *   - #files-root  (files-page.tsx, GET /files)  → FilesGallery full-page
+ *   - #upload-root (upload-island.tsx, GET /)    → App (Upload/Mirror tabs)
  *
  * Nostr signing requires a NIP-07 extension (nos2x, Alby, …). The
  * window.nostr.js NIP-46 fallback was removed for v1: without a configured
@@ -11,19 +13,28 @@
  */
 import { render } from "@hono/hono/jsx/dom";
 import { App } from "./App.tsx";
+import { FilesGallery } from "./FilesGallery.tsx";
 
-const root = document.getElementById("upload-root");
-if (root) {
+const filesRoot = document.getElementById("files-root");
+if (filesRoot) {
   render(
-    <App
-      requireAuth={root.dataset.requireAuth === "true"}
-      mediaEnabled={root.dataset.mediaEnabled === "true"}
-      mediaRequireAuth={root.dataset.mediaRequireAuth === "true"}
-      optimizeByDefault={root.dataset.optimizeByDefault === "true"}
-      mirrorEnabled={root.dataset.mirrorEnabled === "true"}
-      mirrorRequireAuth={root.dataset.mirrorRequireAuth === "true"}
-      listEnabled={root.dataset.listEnabled === "true"}
-    />,
-    root,
+    <FilesGallery listEnabled={filesRoot.dataset.listEnabled === "true"} />,
+    filesRoot,
   );
+} else {
+  const root = document.getElementById("upload-root");
+  if (root) {
+    render(
+      <App
+        requireAuth={root.dataset.requireAuth === "true"}
+        mediaEnabled={root.dataset.mediaEnabled === "true"}
+        mediaRequireAuth={root.dataset.mediaRequireAuth === "true"}
+        optimizeByDefault={root.dataset.optimizeByDefault === "true"}
+        mirrorEnabled={root.dataset.mirrorEnabled === "true"}
+        mirrorRequireAuth={root.dataset.mirrorRequireAuth === "true"}
+        listEnabled={root.dataset.listEnabled === "true"}
+      />,
+      root,
+    );
+  }
 }

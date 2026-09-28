@@ -19,7 +19,9 @@ export type MirrorStatus =
   | "retrying"
   | "error";
 
-export type Tab = "upload" | "mirror" | "files";
+/** Landing-page tabs. "My Files" moved to its own page (GET /files) and is a
+ * plain link in the tab bar — not an in-card tab anymore. */
+export type Tab = "upload" | "mirror";
 
 export interface GalleryError {
   kind:
