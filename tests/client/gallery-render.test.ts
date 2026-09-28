@@ -128,3 +128,59 @@ Deno.test("gallery render: connect → signed fetch → connected grid", async (
     g.fetch = prevFetch;
   }
 });
+
+Deno.test("gallery render: error state shows message and Retry", async () => {
+  const prevFetch = g.fetch;
+  const prevLocation = g.location;
+  g.location = { origin: "http://localhost:3000" };
+  g.nostr = {
+    signEvent: () => Promise.reject(new Error("User rejected")),
+  };
+  g.fetch = () => Promise.reject(new Error("network error"));
+
+  try {
+    const root = dom.document.getElementById("r");
+    if (!root) throw new Error("missing root");
+    render(createElement(FilesGallery, { listEnabled: true }), root);
+
+    const connect = findButton("Connect with Nostr");
+    if (!connect) throw new Error("Connect button missing");
+    connect.dispatchEvent(new dom.Event("click", { bubbles: true }));
+
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      if (text().includes("User rejected") || text().includes("Retry")) {
+        break;
+      }
+    }
+
+    const hasError = text().includes("User rejected");
+    const hasRetry = findButton("Retry") !== null;
+    if (!hasError) {
+      throw new Error("error message not shown after signer rejection");
+    }
+    if (!hasRetry) {
+      throw new Error("Retry button not shown after signer rejection");
+    }
+  } finally {
+    g.fetch = prevFetch;
+    g.location = prevLocation;
+    dom.document.getElementById("r")!.innerHTML = "";
+  }
+});
+
+Deno.test("gallery render: filter chips render with aria-pressed in connected state", async () => {
+  const root = dom.document.getElementById("r");
+  if (!root) throw new Error("missing root");
+  render(createElement(FilesGallery, { listEnabled: true }), root);
+
+  const chipLabels = ["All", "Images", "Videos", "Audio", "Other"];
+  for (const label of chipLabels) {
+    const chip = [...dom.document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === label,
+    );
+    if (!chip) throw new Error(`chip "${label}" missing`);
+    // All chips render (aria-pressed state tested at the unit level)
+    assertEquals(typeof chip.getAttribute("aria-pressed"), "string");
+  }
+});
