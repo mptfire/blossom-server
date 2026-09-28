@@ -54,8 +54,11 @@ deno task build
 > modifying files.
 
 > **Read before writing tests:** `TESTING.md` contains the full planned test
-> matrix and helper patterns. Tests go in `tests/unit/` (pure logic) or
-> `tests/e2e/` (full Hono app via `app.fetch()` — no real HTTP port needed).
+> matrix and helper patterns. Tests go in `tests/unit/` (pure logic),
+> `tests/e2e/` (full Hono app via `app.fetch()` — no real HTTP port needed), or
+> `tests/client/` (gallery component renders under the client's dom JSX runtime
+> via `deno task test:client` — never import these from the root config, which
+> compiles TSX for the server runtime).
 
 ---
 
@@ -95,13 +98,15 @@ blossom-server/
     ├── admin/                # Admin dashboard SSR components (hono/jsx)
     ├── landing/
     │   ├── client/           # Client-side island (hono/jsx/dom, bundled to public/client.js)
-    │   │   ├── index.tsx     # Entry point — hydrates #upload-root
-    │   │   ├── App.tsx
+    │   │   ├── index.tsx     # Entry point — hydrates #files-root OR #upload-root
+    │   │   ├── App.tsx       # Landing Upload/Mirror tabs (My Files is a link to /files)
+    │   │   ├── FilesGallery.tsx
     │   │   ├── UploadForm.tsx
     │   │   ├── MirrorForm.tsx
     │   │   └── ...
     │   ├── layout.tsx        # HTML shell + Tailwind CDN
     │   ├── page.tsx          # LandingPage async SSR component
+    │   ├── files-page.tsx    # Full-page file manager shell (GET /files, max-w-6xl)
     │   ├── upload-island.tsx # Island mount point (data-* attrs → client hydration)
     │   ├── server-info.tsx
     │   └── stats-bar.tsx

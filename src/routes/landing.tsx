@@ -11,6 +11,7 @@ import { Hono } from "@hono/hono";
 import type { Client } from "@libsql/client";
 import type { Config } from "../config/schema.ts";
 import { DirectDbHandle } from "../db/direct.ts";
+import { FilesPage } from "../landing/files-page.tsx";
 import { LandingPage } from "../landing/page.tsx";
 
 const CLIENT_BUNDLE_PATH = "./public/client.js";
@@ -49,6 +50,14 @@ export async function buildLandingRouter(
 
   app.get("/", (c) => {
     return c.html(<LandingPage db={handle} config={config} />);
+  });
+
+  // Full-page file manager. Mounted under the landing router so it is claimed
+  // before the blob catch-all — "files" can never collide with a 64-hex hash.
+  // Gated on landing.enabled because the gallery is a landing-page feature
+  // (it lives in the same client bundle).
+  app.get("/files", (c) => {
+    return c.html(<FilesPage config={config} />);
   });
 
   return app;
