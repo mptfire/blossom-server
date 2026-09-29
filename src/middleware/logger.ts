@@ -8,11 +8,19 @@ import type { MiddlewareHandler } from "@hono/hono";
  *   --> GET /upload
  *   <-- GET /upload 200 4ms
  *   <-- PUT /upload 403 1ms  Auth token expired
+ *
+ * The query string is stripped before logging (r8 senior review, privacy
+ * finding): cursors, filters and limits are operational noise in journald,
+ * and the path alone is enough for debugging. Paths still contain public
+ * blob hashes and list pubkeys — journald access is root-level only and
+ * capped (SystemdMaxRetention / journal drop-in on the VPS).
  */
 export const requestLogger: MiddlewareHandler = async (ctx, next) => {
   const { method } = ctx.req;
   const url = ctx.req.url;
-  const path = url.slice(url.indexOf("/", 8));
+  let path = url.slice(url.indexOf("/", 8));
+  const q = path.indexOf("?");
+  if (q !== -1) path = path.slice(0, q);
 
   console.log(`--> ${method} ${path}`);
 

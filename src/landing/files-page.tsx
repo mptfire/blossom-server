@@ -16,7 +16,12 @@ export const FilesPage: FC<{ config: Config }> = ({ config }) => (
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>{`My Files · ${config.landing.title}`}</title>
-      <script src="https://cdn.tailwindcss.com/3.4.17" />
+      {
+        /* Precompiled Tailwind (public/tw.css) — no third-party script runs
+          on this page (r8 senior review, privacy finding). Regenerate:
+          scripts/gen-css.sh */
+      }
+      <link rel="stylesheet" href="/tw.css" />
     </head>
     <body class="bg-gray-950 text-gray-100 min-h-screen antialiased">
       <div class="max-w-6xl mx-auto px-4 py-8">

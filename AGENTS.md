@@ -47,6 +47,12 @@ deno fmt
 # Pre-build the landing page client bundle (output: public/client.js)
 # Required before running the server when the landing page is enabled.
 deno task build
+
+# Regenerate public/tw.css (precompiled Tailwind) after ANY class change.
+# Pages load /tw.css — the cdn.tailwindcss.com runtime script was removed
+# (r8 senior review: no third-party scripts on signing pages). Requires the
+# standalone CLI (v3.4.17): scripts/.tailwindcss-linux-x64 or $TAILWIND_BIN.
+scripts/gen-css.sh
 ```
 
 > **Before every commit:** run `deno fmt` to auto-format all changed files.
