@@ -205,3 +205,16 @@ export function rememberedFilename(hash: string): string | null {
   hydrateFilenameCache();
   return filenameCache.get(hash) ?? null;
 }
+
+/** Forget every remembered filename (r8 senior review, low finding): names
+ * were shared across Nostr identities on the same browser profile — another
+ * key using this browser could see them. Called on gallery disconnect and
+ * identity change; names uploaded afterwards start a fresh map. */
+export function clearFilenames(): void {
+  filenameCache.clear();
+  try {
+    sessionStorage.removeItem(FILENAME_KEY);
+  } catch {
+    // storage unavailable — nothing to clear
+  }
+}

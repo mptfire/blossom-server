@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "@hono/hono/jsx/dom";
 import type { BlobDescriptor, GalleryError, NostrProvider } from "./types.ts";
 import { getNostrProvider, signDeleteAuth, signListAuth } from "./auth.ts";
 import { deleteBlob, ListHttpError, listMyBlobs } from "./api.ts";
-import { rememberedFilename } from "./helpers.ts";
+import { clearFilenames, rememberedFilename } from "./helpers.ts";
 import { type CopyFormat, copyTextFor } from "./copy-export.ts";
 import { withTimeout } from "./with-timeout.ts";
 
@@ -162,10 +162,10 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       </div>
     );
   }
-
   /** Clear every piece of gallery state. Called on disconnect and identity
    * change — an atomic identity boundary (senior review item S3). */
   function resetGalleryState(): void {
+    clearFilenames(); // names are identity-specific (r8 senior review, low)
     tokenRef.current = null;
     pubkeyRef.current = null;
     setPubkey(null);
@@ -253,6 +253,12 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       setQuery("");
       setSelectMode(false);
       setSelected(new Set());
+      // r8 senior review (medium): identity-specific transient state must not
+      // outlive the key that opened it.
+      setConfirmHashes(null);
+      setDeleteProgress(null);
+      setNotice(null);
+      clearFilenames();
     }
     pubkeyRef.current = signedPubkey;
     setPubkey(signedPubkey);
@@ -573,7 +579,10 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
 
   /** Server contract: one signed delete event per blob (no multi-delete), so
    * a batch signs sequentially — one nos2x prompt per file, progress shown.
-   * Stops at the first failure; un-deleted files stay selected for retry. */
+   * Stops at the first failure; un-deleted files stay selected for retry.
+   * Every exit path reconciles the grid: blobs whose DELETE succeeded are
+   * removed from view even when the batch stopped midway (r8 senior review,
+   * medium finding — the old code only reconciled after full success). */
   async function performDelete(): Promise<void> {
     const hashes = confirmHashes;
     if (!hashes || hashes.length === 0 || deleteProgress) return;
@@ -588,42 +597,14 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     }
     let done = 0;
     const removed: string[] = [];
-    try {
-      for (const hash of hashes) {
-        if (gen !== sessionGen.current!) return; // superseded mid-batch
-        try {
-          const { header } = await withTimeout(
-            signDeleteAuth(nostr, hash, globalThis.location.origin),
-            APPROVAL_WINDOW_MS,
-            "Waiting for the nos2x approval timed out. Dismiss any old prompt and try again.",
-          );
-          if (gen !== sessionGen.current!) return;
-          await deleteBlob(hash, header);
-          removed.push(hash);
-        } catch (err) {
-          if ((err as Error).name === "AbortError") return;
-          const reason = err instanceof Error ? err.message : String(err);
-          setNotice({
-            kind: "err",
-            text: `Deleted ${removed.length} of ${hashes.length} — stopped: ${reason}`,
-          });
-          return;
-        } finally {
-          done++;
-          setDeleteProgress({ done, total: hashes.length });
-        }
-      }
-    } finally {
-      setDeleteProgress(null);
-    }
-    // Capture the open viewer's file BEFORE removal — descriptors state still
-    // holds the pre-delete list in this closure, so viewerIdx resolves to the
-    // actually-open blob. Close the viewer if that blob was deleted (indices
-    // shift after removal, so a stale index would show the wrong file).
-    const openHash = viewerIdx !== null
-      ? computeVisible()[viewerIdx]?.sha256 ?? null
-      : null;
-    if (removed.length > 0) {
+    /** Remove successfully deleted blobs from the grid + selection + viewer.
+     * Captures the open viewer's hash BEFORE descriptor removal (descriptors
+     * state still holds the pre-delete list in this closure). */
+    const reconcile = (): void => {
+      if (removed.length === 0) return;
+      const openHash = viewerIdx !== null
+        ? computeVisible()[viewerIdx]?.sha256 ?? null
+        : null;
       const gone = new Set(removed);
       setDescriptors((prev) => prev.filter((d) => !gone.has(d.sha256)));
       for (const h of removed) seenHashes.current!.delete(h);
@@ -636,12 +617,52 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         setViewerIdx(null);
         setZoomed(false);
       }
+    };
+    let aborted: string | null = null;
+    try {
+      for (const hash of hashes) {
+        if (gen !== sessionGen.current!) return; // superseded mid-batch
+        try {
+          const { header, pubkey: signedPubkey } = await withTimeout(
+            signDeleteAuth(nostr, hash, globalThis.location.origin),
+            APPROVAL_WINDOW_MS,
+            "Waiting for the nos2x approval timed out. Dismiss any old prompt and try again.",
+          );
+          if (gen !== sessionGen.current!) return;
+          // The extension may have switched accounts between prompts — a
+          // token from a different key must never be sent (r8 senior review,
+          // medium finding: shared blobs would lose the WRONG key's ownership).
+          if (signedPubkey && pubkeyRef.current && signedPubkey !== pubkeyRef.current) {
+            aborted = "the signer switched to a different Nostr key";
+            break; // reconcile + failure notice run after the outer finally
+          }
+          await deleteBlob(hash, header);
+          removed.push(hash);
+        } catch (err) {
+          if ((err as Error).name === "AbortError") return;
+          aborted = err instanceof Error ? err.message : String(err);
+          break; // reconcile + failure notice run after the outer finally
+        } finally {
+          done++;
+          setDeleteProgress({ done, total: hashes.length });
+        }
+      }
+    } finally {
+      setDeleteProgress(null);
+      reconcile();
     }
-    setNotice({
-      kind: "ok",
-      text:
-        `Deleted ${removed.length} file${removed.length === 1 ? "" : "s"}.`,
-    });
+    setNotice(
+      aborted
+        ? {
+          kind: "err",
+          text: `Deleted ${removed.length} of ${hashes.length} — stopped: ${aborted}`,
+        }
+        : {
+          kind: "ok",
+          text:
+            `Deleted ${removed.length} file${removed.length === 1 ? "" : "s"}.`,
+        },
+    );
   }
 
   useEffect(() => {
@@ -720,6 +741,11 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
             Retry
           </button>
         )}
+        <p class="mt-6 text-gray-600 text-xs max-w-md mx-auto leading-relaxed">
+          Blob URLs are public — anyone who knows a file's link can fetch it,
+          and copies already cached or downloaded survive deletion. Don't
+          upload anything sensitive unless it's encrypted first.
+        </p>
       </div>
     );
   }
@@ -1265,7 +1291,7 @@ function Viewer(
                 src={d.url}
                 alt={displayNameFor(d)}
                 class={`max-h-[60vh] transition-transform ${
-                  zoomed ? "scale-200 cursor-grab" : ""
+                  zoomed ? "scale-[2.5] cursor-grab" : ""
                 }`}
               />
             )

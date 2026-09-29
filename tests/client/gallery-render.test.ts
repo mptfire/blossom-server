@@ -277,7 +277,12 @@ async function waitUntil(fn: () => boolean): Promise<void> {
     if (fn()) return;
     await new Promise((r) => setTimeout(r, 25));
   }
-  if (!fn()) throw new Error("condition not met after polling");
+  if (!fn()) {
+    throw new Error(
+      "condition not met after polling. body: " +
+        text().slice(0, 500),
+    );
+  }
 }
 
 Deno.test("gallery render: toolbar has search, sort select, and Select button", async () => {
@@ -348,6 +353,91 @@ Deno.test("gallery render: select mode shows bulk bar and toggles cards", async 
     if (!cancel) throw new Error("Cancel select missing");
     cancel.dispatchEvent(new dom.Event("click", { bubbles: true }));
     await waitUntil(() => !text().includes("selected"));
+  } finally {
+    teardown(prev);
+  }
+});
+
+Deno.test("gallery render: partial bulk delete reconciles grid on failure", async () => {
+  // r8 senior review (medium): when file 2 of 2 fails, file 1 — whose DELETE
+  // succeeded — must leave the grid immediately, not linger until retry.
+  const deleteCalls: string[] = [];
+  let signCount = 0;
+  const prev = setupConnected((input, init) => {
+    if ((init?.method ?? "GET") === "DELETE") {
+      deleteCalls.push(String(input));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(listResponse());
+  });
+  // Signer approves the first delete prompt, then "user-rejects" the second.
+  // signEvent #1 is connect()'s list token — delete prompts start at #2.
+  g.nostr = {
+    signEvent: (ev: { kind: number }) => {
+      signCount++;
+      if (signCount <= 2) {
+        return Promise.resolve({ ...ev, pubkey: PK, sig: "00", id: "00" });
+      }
+      return Promise.reject(new Error("User rejected"));
+    },
+  };
+
+  try {
+    const root = dom.document.getElementById("r");
+    if (!root) throw new Error("missing root");
+    render(createElement(FilesGallery, { listEnabled: true }), root);
+    const connect = findButton("Connect with Nostr");
+    if (!connect) throw new Error("Connect button missing");
+    connect.dispatchEvent(new dom.Event("click", { bubbles: true }));
+    await waitUntil(() => findButton("Disconnect") !== null);
+
+    // Select mode: select two cards, bulk delete
+    findButton("Select")!.dispatchEvent(
+      new dom.Event("click", { bubbles: true }),
+    );
+    await waitUntil(() => text().includes("0 selected"));
+    const thumbs = [...dom.document.querySelectorAll("button")].filter(
+      (b) =>
+        (b.getAttribute("aria-label") ?? "").startsWith("Toggle selection of "),
+    );
+    if (thumbs.length !== 4) {
+      throw new Error(`expected 4 cards, got ${thumbs.length}`);
+    }
+    thumbs[0].dispatchEvent(new dom.Event("click", { bubbles: true }));
+    thumbs[1].dispatchEvent(new dom.Event("click", { bubbles: true }));
+    await waitUntil(() => text().includes("2 selected"));
+
+    [...dom.document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Delete",
+    )!.dispatchEvent(new dom.Event("click", { bubbles: true }));
+    await waitUntil(() => text().includes("Delete 2 files?"));
+    // Scope to the confirm dialog — the bulk bar's own "Delete" button is
+    // still mounted behind it and would win an unscoped document-order find.
+    const dialog = dom.document.querySelector(
+      '[role="dialog"][aria-label="Confirm delete"]',
+    );
+    if (!dialog) throw new Error("confirm dialog missing");
+    [...dialog.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Delete",
+    )!.dispatchEvent(new dom.Event("click", { bubbles: true }));
+
+    await waitUntil(() =>
+      text().includes("Deleted 1 of 2") && deleteCalls.length === 1
+    );
+    // The successfully deleted card must be GONE from the grid — thumbs are
+    // still in select mode here, so their labels are "Toggle selection of"
+    await waitUntil(() =>
+      [...dom.document.querySelectorAll("button")].filter(
+        (b) =>
+          (b.getAttribute("aria-label") ?? "").startsWith(
+            "Toggle selection of ",
+          ),
+      ).length === 3
+    );
+    // Remaining file stays selected for retry
+    if (!text().includes("1 selected")) {
+      throw new Error("surviving file should remain selected for retry");
+    }
   } finally {
     teardown(prev);
   }
