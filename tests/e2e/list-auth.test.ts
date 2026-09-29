@@ -17,6 +17,7 @@
 import type { Hono } from "@hono/hono";
 import { assertEquals } from "@std/assert";
 import { encodeBase64Url } from "@std/encoding/base64url";
+import { encodeHex } from "@std/encoding/hex";
 import { join } from "@std/path";
 import type { NostrEvent } from "nostr-tools";
 import {
@@ -48,14 +49,18 @@ interface AuthOpts {
   forgedPubkey?: string;
 }
 
-function makeAuth(sk: Uint8Array, opts: AuthOpts = {}): NostrEvent {
+function makeAuth(
+  sk: Uint8Array,
+  opts: AuthOpts = {},
+  extraTags: string[][] = [],
+): NostrEvent {
   const now = Math.floor(Date.now() / 1000);
   const tags: string[][] = [
     ["t", opts.tTag ?? "list"],
     ["expiration", String(opts.expiration ?? now + 600)],
   ];
   if (opts.server) tags.push(["server", opts.server]);
-  if (opts.server) tags.push(["server", opts.server]);
+  tags.push(...extraTags);
   const event = finalizeEvent(
     {
       kind: 24242,
@@ -126,7 +131,12 @@ Deno.test({
       const pk = getPublicKey(sk);
       for (let i = 0; i < (sk === skA ? 5 : 2); i++) {
         const body = new TextEncoder().encode(`${label} blob ${i}`);
-        const auth = makeAuth(sk, { tTag: "upload" });
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          body.buffer as ArrayBuffer,
+        );
+        const xHash = encodeHex(new Uint8Array(digest));
+        const auth = makeAuth(sk, { tTag: "upload" }, [["x", xHash]]);
         const res = await app.fetch(
           new Request("http://localhost/upload", {
             method: "PUT",

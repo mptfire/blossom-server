@@ -18,6 +18,7 @@
 import type { Hono } from "@hono/hono";
 import { assertEquals } from "@std/assert";
 import { encodeBase64Url } from "@std/encoding/base64url";
+import { encodeHex } from "@std/encoding/hex";
 import { join } from "@std/path";
 import {
   finalizeEvent,
@@ -121,11 +122,20 @@ Deno.test({
     ): Promise<string> {
       const now = Math.floor(Date.now() / 1000);
       const body = new TextEncoder().encode(content);
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        body.buffer as ArrayBuffer,
+      );
+      const xHash = encodeHex(new Uint8Array(digest));
       const ev = finalizeEvent(
         {
           kind: 24242,
           created_at: now,
-          tags: [["t", "upload"], ["expiration", String(now + 600)]],
+          tags: [
+            ["t", "upload"],
+            ["expiration", String(now + 600)],
+            ["x", xHash],
+          ],
           content: "seed",
         },
         sk,

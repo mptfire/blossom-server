@@ -87,7 +87,14 @@ export function buildBlobsRouter(
     const normalizedType = mimeType.toLowerCase().split(";")[0].trim();
     const activeDocument = normalizedType === "image/svg+xml" ||
       normalizedType === "text/html" ||
-      normalizedType === "application/xhtml+xml";
+      normalizedType === "application/xhtml+xml" ||
+      // XML dialects can pull stylesheets (<?xml-stylesheet?> → XSLT that
+      // emits scripted HTML executing on this origin) — force download too
+      // (senior review r8, high-conditional finding).
+      normalizedType === "text/xml" ||
+      normalizedType === "application/xml" ||
+      normalizedType === "text/xsl" ||
+      normalizedType === "application/xslt+xml";
     const headers: Record<string, string> = {
       "Content-Type": mimeType,
       "Content-Length": String(blob.size),
