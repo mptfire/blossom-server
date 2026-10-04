@@ -23,6 +23,7 @@ const REJECTED_IPV4 = [
   "192.0.0.1", // IANA special
   "192.0.2.1", // TEST-NET-1
   "192.168.1.1", // RFC-1918
+  "192.88.99.1", // deprecated 6to4 relay anycast
   "198.18.0.1", // benchmarking
   "198.51.100.1", // TEST-NET-2
   "203.0.113.1", // TEST-NET-3
@@ -73,13 +74,22 @@ const REJECTED_IPV6 = [
   "fc00::1", // ULA lower edge
   "fe80::1", // link-local — MISSED by the old guard
   "febf:ffff::1", // link-local upper edge
+  "fec0::1", // deprecated site-local
+  "feff:ffff::1", // deprecated site-local upper edge
   "ff02::1", // multicast
+  "100::1", // discard-only
+  "64:ff9b:1::1", // local-use translation prefix
+  "2001:2::1", // benchmarking
+  "2001:10::1", // ORCHIDv1
+  "2001:20::1", // ORCHIDv2
   "64:ff9b::127.0.0.1", // NAT64 embedding loopback
   "64:ff9b::7f00:1", // NAT64 loopback, hex spelling
   "2002:7f00:1::", // 6to4 embedding 127.0.0.1
   "2002:a9fe:1::", // 6to4 embedding 169.254.0.1 (metadata range)
   "2001:0:1234::1", // Teredo
   "2001:db8::1", // documentation
+  "3fff::1", // documentation
+  "5f00::1", // segment-routing SIDs
 ];
 
 const ALLOWED_IPV6 = [
@@ -128,6 +138,7 @@ Deno.test("parseIPv6: malformed inputs return null", () => {
   assertEquals(parseIPv6("1::2::3"), null); // two "::"
   assertEquals(parseIPv6("1:2:3"), null); // too few groups
   assertEquals(parseIPv6("1:2:3:4:5:6:7:8:9"), null); // too many groups
+  assertEquals(parseIPv6("1:2:3:4:5:6:7::8"), null); // "::" must compress at least one group
   assertEquals(parseIPv6("gg::1"), null); // non-hex
   assertEquals(parseIPv6("1.2.3.4"), null); // IPv4 is not IPv6
   assertEquals(parseIPv6("::ffff:999.1.1.1"), null); // invalid embedded IPv4
@@ -166,4 +177,9 @@ Deno.test("validateResolvedRecords: private AAAA record rejects", () => {
 
 Deno.test("validateResolvedRecords: empty record sets pass", () => {
   assertEquals(validateResolvedRecords([], []), null);
+});
+
+Deno.test("validateResolvedRecords: malformed resolver output rejects", () => {
+  assertEquals(validateResolvedRecords(["not-an-ip"], []) !== null, true);
+  assertEquals(validateResolvedRecords([], ["also-not-an-ip"]) !== null, true);
 });

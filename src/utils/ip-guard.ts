@@ -66,6 +66,7 @@ export function parseIPv6(host: string): bigint | null {
   const present = headGroups.length + tailGroups.length;
   const missing = 8 - present;
   if (missing < 0) return null;
+  if (dblIdx !== -1 && missing === 0) return null;
   if (dblIdx === -1 && missing !== 0) return null;
 
   const groups = [
@@ -100,6 +101,10 @@ export function classifyIPv4(octets: number[]): string | null {
     [a === 192 && b === 0 && octets[2] === 0, "IANA special (192.0.0.0/24)"],
     [a === 192 && b === 0 && octets[2] === 2, "documentation (192.0.2.0/24)"],
     [a === 192 && b === 168, "private (192.168.0.0/16)"],
+    [
+      a === 192 && b === 88 && octets[2] === 99,
+      "deprecated relay (192.88.99.0/24)",
+    ],
     [a === 198 && (b === 18 || b === 19), "benchmarking (198.18.0.0/15)"],
     [
       a === 198 && b === 51 && octets[2] === 100,
@@ -130,9 +135,23 @@ export function classifyIPv6(v: bigint): string | null {
   ) {
     return "IPv6 link-local (fe80::/10)";
   }
+  if (
+    topByte === 0xfen && ((v >> 112n) & 0xffn) >= 0xc0n
+  ) {
+    return "IPv6 site-local (fec0::/10)";
+  }
   if (topByte === 0xffn) return "IPv6 multicast (ff00::/8)";
+  if (v >> 64n === 0x0100000000000000n) return "IPv6 discard-only (100::/64)";
+  if (v >> 80n === 0x0064ff9b0001n) {
+    return "IPv6 local-use translation (64:ff9b:1::/48)";
+  }
+  if (v >> 80n === 0x200100020000n) return "IPv6 benchmarking (2001:2::/48)";
+  if (v >> 100n === 0x2001001n) return "IPv6 ORCHIDv1 (2001:10::/28)";
+  if (v >> 100n === 0x2001002n) return "IPv6 ORCHIDv2 (2001:20::/28)";
+  if (v >> 108n === 0x3fff0n) return "IPv6 documentation (3fff::/20)";
+  if (v >> 112n === 0x5f00n) return "IPv6 segment-routing SIDs (5f00::/16)";
   // IPv4-mapped: ::ffff:0:0/96 — also catches hex spellings like ::ffff:7f00:1
-  if (v >> 96n === 0xffffn) {
+  if (v >> 32n === 0xffffn) {
     const reason = classifyIPv4(ipv4FromLow32(v)!);
     if (reason) return `IPv4-mapped ${reason}`;
   }
@@ -151,7 +170,7 @@ export function classifyIPv6(v: bigint): string | null {
   // Documentation: 2001:db8::/32
   if (v >> 96n === 0x20010db8n) return "IPv6 documentation (2001:db8::/32)";
   // IPv4-compatible (deprecated): ::a.b.c.d — anything under 2^32
-  if (v >> 96n === 0n) {
+  if (v >> 32n === 0n) {
     const reason = classifyIPv4(ipv4FromLow32(v)!);
     if (reason) return `IPv4-compatible ${reason}`;
   }
@@ -203,17 +222,17 @@ export function validateResolvedRecords(
 ): string | null {
   for (const record of aRecords) {
     const v4 = parseIPv4(record);
-    if (v4) {
-      const reason = classifyIPv4(v4);
-      if (reason) return `hostname resolves to ${reason}: ${record}`;
-    }
+    if (!v4) return `hostname resolved to an invalid IPv4 address: ${record}`;
+    const reason = classifyIPv4(v4);
+    if (reason) return `hostname resolves to ${reason}: ${record}`;
   }
   for (const record of aaaaRecords) {
     const v6 = parseIPv6(record);
-    if (v6 !== null) {
-      const reason = classifyIPv6(v6);
-      if (reason) return `hostname resolves to ${reason}: ${record}`;
+    if (v6 === null) {
+      return `hostname resolved to an invalid IPv6 address: ${record}`;
     }
+    const reason = classifyIPv6(v6);
+    if (reason) return `hostname resolves to ${reason}: ${record}`;
   }
   return null;
 }
