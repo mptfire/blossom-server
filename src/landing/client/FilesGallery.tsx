@@ -665,6 +665,29 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     );
   }
 
+  // Global shortcuts: "/" focuses search, Esc exits select mode (prototype
+  // parity). No-ops while an input/select holds focus or a dialog is open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "/" && !selectMode && confirmHashes === null) {
+        const search = document.querySelector<HTMLInputElement>(
+          'input[type="search"]',
+        );
+        if (search) {
+          e.preventDefault();
+          search.focus();
+        }
+      }
+      if (e.key === "Escape" && selectMode && confirmHashes === null) {
+        exitSelectMode();
+      }
+    };
+    globalThis.addEventListener("keydown", onKey);
+    return () => globalThis.removeEventListener("keydown", onKey);
+  }, [selectMode, confirmHashes]);
+
   useEffect(() => {
     // Confirm dialog open → Esc cancels, Enter confirms (destructive default
     // deliberately NOT on Enter for safety — Enter only confirms when the
@@ -1227,6 +1250,14 @@ function Viewer(
   const preview = previewKind(d);
   const trusted = isTrustedUrl(d.url);
   const zoomable = trusted && (preview === "image" || preview === "gif");
+  // Drag-to-pan while zoomed (pointer events → mouse + touch). Offset resets
+  // whenever zoom toggles or the viewer shows a different file.
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ px: number; py: number } | null>(null);
+  useEffect(() => {
+    setPan({ x: 0, y: 0 });
+    dragRef.current = null;
+  }, [zoomed, d.sha256]);
   return (
     <div
       class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
@@ -1291,8 +1322,29 @@ function Viewer(
                 src={d.url}
                 alt={displayNameFor(d)}
                 class={`max-h-[60vh] transition-transform ${
-                  zoomed ? "scale-[2.5] cursor-grab" : ""
+                  zoomed ? "scale-[2.5] cursor-grab active:cursor-grabbing touch-none" : ""
                 }`}
+                style={`translate: ${pan.x}px ${pan.y}px`}
+                onMouseDown={(e) => {
+                  if (!zoomed) return;
+                  dragRef.current = { px: e.clientX, py: e.clientY };
+                }}
+                onMouseMove={(e) => {
+                  const drag = dragRef.current;
+                  if (!drag) return;
+                  setPan((prev) => ({
+                    x: prev.x + e.clientX - drag.px,
+                    y: prev.y + e.clientY - drag.py,
+                  }));
+                  dragRef.current = { px: e.clientX, py: e.clientY };
+                }}
+                onMouseUp={() => {
+                  dragRef.current = null;
+                }}
+                onMouseLeave={() => {
+                  dragRef.current = null;
+                }}
+                draggable={false}
               />
             )
             : preview === "video"

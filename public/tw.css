@@ -625,6 +625,9 @@ video {
 .cursor-pointer {
   cursor: pointer;
 }
+.touch-none {
+  touch-action: none;
+}
 .select-none {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -1395,6 +1398,9 @@ video {
 .focus\:ring-blue-500:focus {
   --tw-ring-opacity: 1;
   --tw-ring-color: rgb(59 130 246/var(--tw-ring-opacity,1));
+}
+.active\:cursor-grabbing:active {
+  cursor: grabbing;
 }
 .disabled\:opacity-50:disabled {
   opacity: .5;
