@@ -5,11 +5,6 @@ import { verifyEvent } from "nostr-tools/pure";
 import type { NostrEvent } from "nostr-tools";
 import { debug } from "./debug.ts";
 
-/** Maximum auth-token lifetime this server accepts (30 days). Blossom clients
- * use short-lived tokens (our gallery: 300 s); a far-future expiration on a
- * leaked token widens replay scope unnecessarily. */
-export const MAX_AUTH_TTL_SECONDS = 30 * 24 * 60 * 60;
-
 export interface AuthState {
   auth?: NostrEvent;
   authType?: string; // value of the "t" tag
@@ -105,8 +100,7 @@ export function parseAuthEvent(
   }
   // Strict numeric grammar: parseInt alone accepts garbage ("abc" → NaN,
   // and NaN < now is false → a malformed token would never expire) and
-  // silently truncates ("1e12" → 1). Reject non-digits, then enforce a
-  // maximum token lifetime (senior review r8, hardening findings).
+  // silently truncates ("1e12" → 1). Reject non-digits and non-integers.
   if (!/^\d{1,12}$/.test(expiration)) {
     throw new HTTPException(400, {
       message: "Auth event expiration must be a unix-seconds integer",
@@ -121,12 +115,9 @@ export function parseAuthEvent(
   if (expiresAt < now) {
     throw new HTTPException(401, { message: "Auth token expired" });
   }
-  if (expiresAt > now + MAX_AUTH_TTL_SECONDS) {
-    throw new HTTPException(400, {
-      message:
-        `Auth event expiration too far in the future (max ${MAX_AUTH_TTL_SECONDS}s)`,
-    });
-  }
+  // No maximum-lifetime policy: BUD-11 does not define one and valid clients
+  // may use long-lived tokens; the grammar check above already prevents the
+  // malformed-never-expires case (upstream 6.4.1 review feedback, PR #62).
 
   const tTag = auth.tags.find((t) => t[0] === "t")?.[1];
   if (!tTag) {
