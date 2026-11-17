@@ -18,11 +18,13 @@ import { join } from "@std/path";
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure";
 import { ConfigSchema } from "../../src/config/schema.ts";
 import { initDb } from "../../src/db/client.ts";
+import { insertBlob } from "../../src/db/blobs.ts";
 import { buildApp } from "../../src/server.ts";
 import { LocalStorage } from "../../src/storage/local.ts";
 import { initPool } from "../../src/workers/pool.ts";
 
 const sk = generateSecretKey();
+const uploaderPk = "b".repeat(64); // seed owner (any 64-hex)
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer);
@@ -96,7 +98,6 @@ Deno.test({
       [xslTarget, "text/xml"],
       [xslTarget, "application/xml"],
       [script, "application/xslt+xml"],
-      [script, "multipart/x-mixed-replace"],
     ];
     for (const [content, type] of cases) {
       const hash = await seed(content, type);
@@ -113,6 +114,39 @@ Deno.test({
         "nosniff",
         `${type} must carry nosniff`,
       );
+      await res.body?.cancel();
+    }
+
+    // multipart/x-mixed-replace is 415-blocked on /upload by the envelope
+    // guard (by design) but CAN enter via /mirror, which stores the remote
+    // origin's Content-Type — so seed it directly through the storage layer
+    // the way the mirror route commits it.
+    {
+      const content = "<html><script>alert(1)</script></html>";
+      const body = new TextEncoder().encode(content);
+      const hash = await sha256Hex(body);
+      const session = await storage.beginWrite(body.byteLength);
+      const writer = session.writable.getWriter();
+      await writer.write(body);
+      await writer.close();
+      await session.done;
+      await storage.commitWrite(session, hash, "");
+      await insertBlob(db, {
+        sha256: hash,
+        size: body.byteLength,
+        type: "multipart/x-mixed-replace",
+        uploaded: Math.floor(Date.now() / 1000),
+        nip94: null,
+      }, uploaderPk);
+      const res = await app.fetch(new Request(`http://localhost/${hash}`));
+      assertEquals(res.status, 200, "multipart/x-mixed-replace should serve");
+      const cd = res.headers.get("Content-Disposition") ?? "";
+      if (!cd.startsWith("attachment;")) {
+        throw new Error(
+          `multipart/x-mixed-replace served inline (got: "${cd}")`,
+        );
+      }
+      assertEquals(res.headers.get("X-Content-Type-Options"), "nosniff");
       await res.body?.cancel();
     }
 
