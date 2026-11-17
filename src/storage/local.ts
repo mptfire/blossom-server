@@ -159,6 +159,13 @@ export class LocalStorage implements IBlobStorage {
       return;
     }
 
+    // The derivative pipeline stages files via Deno.makeTempFile, which
+    // creates mode 600 regardless of umask — rename preserves it, so the
+    // committed blob would be unreadable by the unattended backup user
+    // (r8b review F2 / the Nov-2026 backup-drift incident). Normalize to
+    // world-readable before the rename.
+    await Deno.chmod(srcPath, 0o644).catch(() => {});
+
     try {
       await Deno.rename(srcPath, finalPath);
     } catch (err) {

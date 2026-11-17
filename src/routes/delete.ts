@@ -16,8 +16,10 @@ import type { Client } from "@libsql/client";
 import { extension as extFromMime } from "@std/media-types";
 import type { IBlobStorage } from "../storage/interface.ts";
 import {
+  countMediaThumbnailParents,
   countOwners,
   deleteBlob,
+  deleteMediaThumbnailLinksForParent,
   getBlob,
   getMediaThumbnailsForParent,
   isOwner,
@@ -65,7 +67,18 @@ export function buildDeleteRouter(
       const auth = requireAuth(ctx, "delete");
       pubkey = auth.pubkey;
 
-      // BUD-11: the delete auth event must include the blob hash in an x tag
+      // BUD-11 + r8b review F7: delete is one-signed-event-per-blob, so the
+      // token must carry EXACTLY one x tag (multi-x tokens would authorize
+      // several blobs under a single signature). requireXTag then verifies
+      // the tag matches the requested hash.
+      const xTagCount = auth.tags.filter((t) => t[0] === "x").length;
+      if (xTagCount !== 1) {
+        return errorResponse(
+          ctx,
+          400,
+          `Delete auth event must carry exactly one x tag (got ${xTagCount})`,
+        );
+      }
       requireXTag(auth, hash);
 
       // Ownership check — only owners may delete their copy of a blob
@@ -88,15 +101,32 @@ export function buildDeleteRouter(
       }
     }
 
-    // No owners left (or unauthenticated delete) — purge the blob entirely
+    // No owners left (or unauthenticated delete) — purge the blob entirely.
+    // Thumbnails are shared derivatives: other users may own the thumbnail
+    // blob and other parents may still reference it, so each one is purged
+    // ONLY when it has no remaining owners and no remaining parent links
+    // (r8b review F1 — the old code wiped shared thumbnails outright).
     const thumbnails = await getMediaThumbnailsForParent(db, hash);
     await deleteBlob(db, hash);
+    await deleteMediaThumbnailLinksForParent(db, hash);
 
     // Remove from storage backend (best-effort — DB record is the source of truth)
     await storage.remove(hash, ext).catch((err) =>
       console.warn(`Failed to remove blob ${hash} from storage:`, err)
     );
     for (const thumbnail of thumbnails) {
+      if (pubkey !== null) {
+        // The deleting user owned this derivative — drop their ownership
+        await removeOwner(db, thumbnail.sha256, pubkey);
+      }
+      const [thumbOwners, parentRefs] = await Promise.all([
+        countOwners(db, thumbnail.sha256),
+        countMediaThumbnailParents(db, thumbnail.sha256),
+      ]);
+      if (thumbOwners > 0 || parentRefs > 0) {
+        // Still referenced — keep the thumbnail blob and its file
+        continue;
+      }
       await deleteBlob(db, thumbnail.sha256).catch((err) =>
         console.warn(
           `Failed to remove thumbnail blob ${thumbnail.sha256} from DB:`,

@@ -85,19 +85,21 @@ export function buildBlobsRouter(
     // so "IMAGE/SVG+XML; charset=utf-8" is caught too (round-5 finding).
     // nosniff guards the rest against MIME-sniffing drift.
     const normalizedType = mimeType.toLowerCase().split(";")[0].trim();
-    const activeDocument = normalizedType === "image/svg+xml" ||
-      normalizedType === "text/html" ||
-      normalizedType === "application/xhtml+xml" ||
-      // XML dialects can pull stylesheets (<?xml-stylesheet?> → XSLT that
-      // emits scripted HTML executing on this origin) — force download too
-      // (senior review r8, high-conditional finding).
-      normalizedType === "text/xml" ||
-      normalizedType === "application/xml" ||
-      normalizedType === "text/xsl" ||
-      normalizedType === "application/xslt+xml" ||
-      // streaming multipart can carry scripted HTML frames (matches
-      // upstream 6.4.1's serving policy)
-      normalizedType === "multipart/x-mixed-replace";
+    // Inline serving is an ALLOWLIST (r8b review F4): media we know browsers
+    // render safely, plus plain text and fonts. Everything else — HTML/SVG,
+    // every XML dialect (per WHATWG mimesniff any */*+xml is XML), streaming
+    // multipart, unknown/active types — is forced to attachment+nosniff so a
+    // stored blob can never execute on the serving origin. nosniff guards
+    // the allowlisted types against MIME-sniffing drift too.
+    const inlineTypeRe = new RegExp(
+      "^(image/(png|jpeg|gif|webp|avif|avifs|heic|heif|x-icon|vnd\\.microsoft\\.icon|bmp|tiff)" +
+        "|(video|audio)/[a-z0-9.+-]+" +
+        "|application/pdf" +
+        "|text/plain" +
+        "|font/[a-z0-9.+-]+" +
+        "|application/(x-font-ttf|font-woff|x-font-woff|vnd\\.ms-fontobject))$",
+    );
+    const inline = inlineTypeRe.test(normalizedType);
     const headers: Record<string, string> = {
       "Content-Type": mimeType,
       "Content-Length": String(blob.size),
@@ -107,7 +109,7 @@ export function buildBlobsRouter(
       ETag: `"${hash}"`,
       "Last-Modified": new Date(blob.uploaded * 1000).toUTCString(),
     };
-    if (activeDocument) {
+    if (!inline) {
       headers["Content-Disposition"] = `attachment; filename="${
         hash.slice(0, 12)
       }${ext ? `.${ext}` : ""}"`;

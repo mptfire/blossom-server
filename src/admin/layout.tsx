@@ -38,7 +38,11 @@ export const AdminLayout: FC<LayoutProps> = ({ title, section, children }) => (
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>{title} — Blossom Admin</title>
-      <script src="https://cdn.tailwindcss.com/3.4.17" />
+      {
+        /* Precompiled Tailwind (public/tw.css) — same policy as the landing
+          and /files pages: no third-party scripts with page authority. */
+      }
+      <link rel="stylesheet" href="/tw.css" />
       {/* deno-fmt-ignore */}
       <script dangerouslySetInnerHTML={{ __html: ACTION_SCRIPT }} />
     </head>

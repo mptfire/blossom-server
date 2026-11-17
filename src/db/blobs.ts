@@ -324,6 +324,31 @@ export async function insertMediaThumbnail(
   });
 }
 
+/** Remove the parent→thumbnail link rows for a purged parent blob. */
+export async function deleteMediaThumbnailLinksForParent(
+  db: Client,
+  parentSha256: string,
+): Promise<void> {
+  await db.execute({
+    sql: `DELETE FROM media_thumbnails WHERE parent_sha256 = ?`,
+    args: [parentSha256],
+  });
+}
+
+/** How many parent blobs still reference this thumbnail. Thumbnails are
+ * shared derivatives: a link here keeps the thumbnail alive even when its
+ * last owner deletes their parent (r8b review F1). */
+export async function countMediaThumbnailParents(
+  db: Client,
+  thumbnailSha256: string,
+): Promise<number> {
+  const rs = await db.execute({
+    sql: `SELECT COUNT(*) FROM media_thumbnails WHERE thumbnail_sha256 = ?`,
+    args: [thumbnailSha256],
+  });
+  return Number(rs.rows[0][0]);
+}
+
 export async function getMediaThumbnailsForParent(
   db: Client,
   parentSha256: string,

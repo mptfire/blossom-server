@@ -158,6 +158,29 @@ Deno.test({
     assertEquals(png.headers.get("X-Content-Type-Options"), "nosniff");
     await png.body?.cancel();
 
+    // text/plain stays inline too (nosniff renders it as text, not HTML)
+    const txtBody = new TextEncoder().encode("plain text blob");
+    const txtHash = await sha256Hex(txtBody);
+    {
+      const session = await storage.beginWrite(txtBody.byteLength);
+      const writer = session.writable.getWriter();
+      await writer.write(txtBody);
+      await writer.close();
+      await session.done;
+      await storage.commitWrite(session, txtHash, "txt");
+      await insertBlob(db, {
+        sha256: txtHash,
+        size: txtBody.byteLength,
+        type: "text/plain",
+        uploaded: Math.floor(Date.now() / 1000),
+        nip94: null,
+      }, uploaderPk);
+    }
+    const txt = await app.fetch(new Request(`http://localhost/${txtHash}`));
+    assertEquals(txt.status, 200);
+    assertEquals(txt.headers.get("Content-Disposition"), null);
+    await txt.body?.cancel();
+
     pool.shutdown();
     await db.close();
     await Deno.remove(serveDir, { recursive: true });
