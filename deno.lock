@@ -22,6 +22,7 @@
     "npm:file-type@^19.6.0": "19.6.0",
     "npm:linkedom@*": "0.18.13",
     "npm:linkedom@0.18.13": "0.18.13",
+    "npm:nostr-tools@*": "2.23.3_typescript@5.9.3",
     "npm:nostr-tools@^2.23.3": "2.23.3_typescript@5.9.3",
     "npm:rxjs@^7.8.0": "7.8.2",
     "npm:sharp@~0.35.3": "0.35.3",

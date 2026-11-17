@@ -158,6 +158,27 @@ Deno.test("parseAuthEvent: rejects float-style and suffixed expiration strings",
   }
 });
 
+Deno.test("parseAuthEvent: expiration exactly now → 401 (boundary, F15)", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const event = makeEvent({
+    tags: [["t", "upload"], ["expiration", String(now)]],
+  });
+  assertThrows(
+    () => parseAuthEvent(encodeEvent(event), null),
+    HTTPException,
+    "expired",
+  );
+});
+
+Deno.test("parseAuthEvent: accepts expiration now+1 (just inside)", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const event = makeEvent({
+    tags: [["t", "upload"], ["expiration", String(now + 1)]],
+  });
+  const parsed = parseAuthEvent(encodeEvent(event), null);
+  assertEquals(parsed.kind, 24242);
+});
+
 Deno.test("parseAuthEvent: accepts long-lived but well-formed expiration", () => {
   // No maximum-lifetime policy — BUD-11 defines none and valid clients may
   // use long-lived tokens. Only grammar and expiry are enforced.

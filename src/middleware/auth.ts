@@ -112,7 +112,7 @@ export function parseAuthEvent(
       message: "Auth event expiration out of range",
     });
   }
-  if (expiresAt < now) {
+  if (expiresAt <= now) {
     throw new HTTPException(401, { message: "Auth token expired" });
   }
   // No maximum-lifetime policy: BUD-11 does not define one and valid clients
