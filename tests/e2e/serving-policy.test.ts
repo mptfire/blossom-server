@@ -96,6 +96,7 @@ Deno.test({
       [xslTarget, "text/xml"],
       [xslTarget, "application/xml"],
       [script, "application/xslt+xml"],
+      [script, "multipart/x-mixed-replace"],
     ];
     for (const [content, type] of cases) {
       const hash = await seed(content, type);

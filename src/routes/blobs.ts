@@ -94,7 +94,10 @@ export function buildBlobsRouter(
       normalizedType === "text/xml" ||
       normalizedType === "application/xml" ||
       normalizedType === "text/xsl" ||
-      normalizedType === "application/xslt+xml";
+      normalizedType === "application/xslt+xml" ||
+      // streaming multipart can carry scripted HTML frames (matches
+      // upstream 6.4.1's serving policy)
+      normalizedType === "multipart/x-mixed-replace";
     const headers: Record<string, string> = {
       "Content-Type": mimeType,
       "Content-Length": String(blob.size),
