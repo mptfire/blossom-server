@@ -179,7 +179,10 @@ export function authMiddleware(
       debug("[auth]", "Extracted domain", domain);
 
       try {
-        const auth = parseAuthEvent(raw, domain ? [domain] : null);
+        // Pass the FULL accepted list — parse-time server-tag validation
+        // must accept tokens scoped to any configured origin, not just the
+        // primary (r8c dual-domain finding).
+        const auth = parseAuthEvent(raw, accepted.length ? accepted : null);
         debug("[auth]", "Parsed auth event", auth.tags);
 
         ctx.set("auth", auth);
