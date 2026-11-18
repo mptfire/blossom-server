@@ -168,53 +168,50 @@ export function friendlyErrorMessage(
 // ---------------------------------------------------------------------------
 
 const FILENAME_KEY = "blossom-filenames";
-// In-memory mirror of the sessionStorage map — avoids a JSON parse of the
-// whole object per card render (senior review 2026-09-18, other improvements).
-const filenameCache = new Map<string, string>();
-let filenameCacheHydrated = false;
+const filenameCaches = new Map<string, Map<string, string>>();
 
-function hydrateFilenameCache(): void {
-  if (filenameCacheHydrated) return;
-  filenameCacheHydrated = true;
+function filenameCache(pubkey: string | null | undefined): Map<string, string> | null {
+  if (!pubkey || !/^[0-9a-f]{64}$/.test(pubkey)) return null;
+  const cached = filenameCaches.get(pubkey);
+  if (cached) return cached;
+  const names = new Map<string, string>();
+  filenameCaches.set(pubkey, names);
   try {
-    const raw = sessionStorage.getItem(FILENAME_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    for (const [hash, name] of Object.entries(parsed)) {
-      if (typeof name === "string") filenameCache.set(hash, name);
+    // Legacy maps have no trustworthy owner; never migrate their names.
+    sessionStorage.removeItem(FILENAME_KEY);
+    const raw = sessionStorage.getItem(`${FILENAME_KEY}:${pubkey}`);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [hash, name] of Object.entries(parsed)) {
+        if (/^[0-9a-f]{64}$/.test(hash) && typeof name === "string") names.set(hash, name);
+      }
     }
   } catch {
-    // storage unavailable — names are a nicety, not a requirement
+    // Storage is optional; identity isolation still applies to memory.
   }
+  return names;
 }
 
-export function rememberFilename(hash: string, name: string): void {
-  hydrateFilenameCache();
-  filenameCache.set(hash, name);
+export function rememberFilename(hash: string, name: string, pubkey?: string): void {
+  const names = filenameCache(pubkey);
+  if (!names) return;
+  names.set(hash, name);
   try {
-    const raw = sessionStorage.getItem(FILENAME_KEY);
-    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    map[hash] = name;
-    sessionStorage.setItem(FILENAME_KEY, JSON.stringify(map));
+    sessionStorage.setItem(`${FILENAME_KEY}:${pubkey}`, JSON.stringify(Object.fromEntries(names)));
   } catch {
-    // in-memory value still works for this session
+    // The in-memory name remains available to its owner.
   }
 }
 
-export function rememberedFilename(hash: string): string | null {
-  hydrateFilenameCache();
-  return filenameCache.get(hash) ?? null;
+export function rememberedFilename(hash: string, pubkey?: string | null): string | null {
+  return filenameCache(pubkey)?.get(hash) ?? null;
 }
 
-/** Forget every remembered filename (r8 senior review, low finding): names
- * were shared across Nostr identities on the same browser profile — another
- * key using this browser could see them. Called on gallery disconnect and
- * identity change; names uploaded afterwards start a fresh map. */
-export function clearFilenames(): void {
-  filenameCache.clear();
-  try {
-    sessionStorage.removeItem(FILENAME_KEY);
-  } catch {
-    // storage unavailable — nothing to clear
+export function clearFilenames(pubkey?: string | null): void {
+  const owners = pubkey ? [pubkey] : [...filenameCaches.keys()];
+  for (const owner of owners) {
+    filenameCaches.delete(owner);
+    try { sessionStorage.removeItem(`${FILENAME_KEY}:${owner}`); } catch { /* optional storage */ }
   }
+  try { sessionStorage.removeItem(FILENAME_KEY); } catch { /* optional storage */ }
 }

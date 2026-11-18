@@ -207,7 +207,7 @@ export function UploadForm({
 
   /** Upload a single file with auto-retry for 429/503. */
   const uploadOne = useCallback(
-    async (uf: UploadFile, authHeader: string | undefined) => {
+    async (uf: UploadFile, authHeader: string | undefined, signerPubkey?: string) => {
       const endpoint = uf.optimize ? "/media" : "/upload";
       const headers: Record<string, string> = {
         "Content-Type": uf.file.type || "application/octet-stream",
@@ -226,7 +226,7 @@ export function UploadForm({
             headers,
             (pct) => patchFile(uf.id, { progress: pct }),
           );
-          rememberFilename(descriptor.sha256, uf.file.name);
+          rememberFilename(descriptor.sha256, uf.file.name, signerPubkey);
           patchFile(uf.id, {
             status: status === 200 ? "exists" : "done",
             progress: 100,
@@ -329,8 +329,14 @@ export function UploadForm({
         for (const uf of batch) patchFile(uf.id, { status: "signing" });
 
         let authHeader: string;
+        let signerPubkey: string;
         try {
-          authHeader = await signBatch(nostr, batchHashes, verb, content);
+          ({ header: authHeader, pubkey: signerPubkey } = await signBatch(
+            nostr,
+            batchHashes,
+            verb,
+            content,
+          ));
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           for (const uf of batch) {
@@ -358,7 +364,7 @@ export function UploadForm({
           }
           activeCount.current = (activeCount.current ?? 0) + 1;
           try {
-            await uploadOne(uf, authHeader);
+            await uploadOne(uf, authHeader, signerPubkey);
           } finally {
             activeCount.current = (activeCount.current ?? 0) - 1;
           }

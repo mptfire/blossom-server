@@ -92,8 +92,11 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-function displayNameFor(d: BlobDescriptor): string {
-  return rememberedFilename(d.sha256) ??
+function displayNameFor(
+  d: BlobDescriptor,
+  pubkey?: string | null,
+): string {
+  return rememberedFilename(d.sha256, pubkey) ??
     `${shortHash(d.sha256)}${extFromUrl(d.url)}`;
 }
 
@@ -124,10 +127,17 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [waitingApproval, setWaitingApproval] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [fallbackKey, setFallbackKey] = useState<string | null>(null);
-  // Viewer is an index into the current visible list so prev/next can walk it.
   // viewerHash: key the open viewer by blob hash — immune to index shifts
   // when descriptors are removed (r8c review F2).
   const [viewerHash, setViewerHash] = useState<string | null>(null);
+  // F9: an in-flight delete is owned by exactly one operation — the ref
+  // locks duplicates, aborts on identity change/disconnect, and carries
+  // the cancellation signal into fetch.
+  const deleteOp = useRef<AbortController | null>(null);
+  // When the confirm dialog opens over the viewer, the viewer is hidden and
+  // its hash stashed here — cancel restores it, so exactly ONE dialog owns
+  // the modal layer at any time (r8c review F12).
+  const viewerRestoreRef = useRef<string | null>(null);
   const [zoomed, setZoomed] = useState(false);
   const lastCardRef = useRef<HTMLElement | null>(null);
   // Restored — these were dropped during the security refactor, which made
@@ -493,7 +503,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     fmt: CopyFormat,
   ): Promise<void> {
     const key = `${d.sha256}:${fmt}`;
-    const name = displayNameFor(d);
+    const name = displayNameFor(d, pubkey);
     const isImage = categoryOf(d) === "image" &&
       d.type !== "image/svg+xml";
     try {
@@ -538,7 +548,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       .filter((d) => filter === "all" || categoryOf(d) === filter)
       .filter((d) => {
         if (!q) return true;
-        return displayNameFor(d).toLowerCase().includes(q) ||
+        return displayNameFor(d, pubkey).toLowerCase().includes(q) ||
           d.sha256.includes(q);
       });
     const by: Record<SortKey, (a: BlobDescriptor, b: BlobDescriptor) => number> =
@@ -562,7 +572,19 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
 
   function confirmDelete(hashes: string[]): void {
     if (hashes.length === 0 || deleteProgress) return;
+    if (viewerHash) {
+      // Confirmation owns the modal layer: hide the viewer, restore on cancel
+      viewerRestoreRef.current = viewerHash;
+      setViewerHash(null);
+    }
     setConfirmHashes(hashes);
+  }
+
+  function dismissConfirm(): void {
+    setConfirmHashes(null);
+    const restore = viewerRestoreRef.current;
+    viewerRestoreRef.current = null;
+    if (restore) setViewerHash(restore);
   }
 
   /** Plain clipboard write with a visible-failure notice (no silent loss). */
@@ -587,12 +609,17 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
    * medium finding — the old code only reconciled after full success). */
   async function performDelete(): Promise<void> {
     const hashes = confirmHashes;
-    if (!hashes || hashes.length === 0 || deleteProgress) return;
+    if (!hashes || hashes.length === 0 || deleteOp.current) return;
+    const operation = new AbortController();
+    deleteOp.current = operation;
     setConfirmHashes(null);
+    viewerRestoreRef.current = null; // a completed delete keeps the viewer closed
     setDeleteProgress({ done: 0, total: hashes.length });
     const gen = sessionGen.current!;
+    const ownsDelete = () => gen === sessionGen.current && deleteOp.current === operation;
     const nostr = getNostrProvider();
     if (!nostr) {
+      deleteOp.current = null;
       setDeleteProgress(null);
       setNotice({ kind: "err", text: "No Nostr extension found." });
       return;
@@ -604,8 +631,6 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
      * state still holds the pre-delete list in this closure). */
     const reconcile = (): void => {
       if (removed.length === 0) return;
-      // viewerHash is stable across descriptor removals (hash-keyed, r8c F2)
-      const openHash = viewerHash;
       const gone = new Set(removed);
       setDescriptors((prev) => prev.filter((d) => !gone.has(d.sha256)));
       for (const h of removed) seenHashes.current!.delete(h);
@@ -614,30 +639,28 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         for (const h of removed) next.delete(h);
         return next;
       });
-      if (viewerHash && gone.has(viewerHash)) {
-        setViewerHash(null);
-        setZoomed(false);
-      }
+      setViewerHash((hash) => hash && gone.has(hash) ? null : hash);
     };
     let aborted: string | null = null;
     try {
       for (const hash of hashes) {
-        if (gen !== sessionGen.current!) return; // superseded mid-batch
+        if (!ownsDelete()) return; // superseded mid-batch
         try {
           const { header, pubkey: signedPubkey } = await withTimeout(
             signDeleteAuth(nostr, hash, globalThis.location.origin),
             APPROVAL_WINDOW_MS,
             "Waiting for the nos2x approval timed out. Dismiss any old prompt and try again.",
           );
-          if (gen !== sessionGen.current!) return;
+          if (!ownsDelete()) return;
           // The extension may have switched accounts between prompts — a
           // token from a different key must never be sent (r8 senior review,
           // medium finding: shared blobs would lose the WRONG key's ownership).
-          if (!signedPubkey || signedPubkey !== pubkeyRef.current) {
+          if (!/^[0-9a-f]{64}$/.test(signedPubkey) || signedPubkey !== pubkeyRef.current) {
             aborted = "the signer switched to a different Nostr key";
             break; // reconcile + failure notice run after the outer finally
           }
-          await deleteBlob(hash, header);
+          await deleteBlob(hash, header, operation.signal);
+          if (!ownsDelete()) return;
           removed.push(hash);
         } catch (err) {
           if ((err as Error).name === "AbortError") return;
@@ -645,13 +668,17 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           break; // reconcile + failure notice run after the outer finally
         } finally {
           done++;
-          setDeleteProgress({ done, total: hashes.length });
+          if (ownsDelete()) setDeleteProgress({ done, total: hashes.length });
         }
       }
     } finally {
-      setDeleteProgress(null);
-      reconcile();
+      if (ownsDelete()) {
+        deleteOp.current = null;
+        setDeleteProgress(null);
+        reconcile();
+      }
     }
+    if (gen !== sessionGen.current) return;
     setNotice(
       aborted
         ? {
@@ -672,7 +699,12 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "/" && !selectMode && confirmHashes === null && viewerHash === null) {
+      if (
+        e.key === "/" &&
+        !selectMode &&
+        confirmHashes === null &&
+        !document.querySelector('[role="dialog"]')
+      ) {
         const search = document.querySelector<HTMLInputElement>(
           'input[type="search"]',
         );
@@ -700,7 +732,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       const topDialog = [...document.querySelectorAll('[role="dialog"]')].pop();
       if (!topDialog) return;
       if (e.key === "Escape") {
-        if (confirmHashes) setConfirmHashes(null);
+        if (confirmHashes) dismissConfirm();
         else closeViewer();
         return;
       }
@@ -947,6 +979,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
             fallbackKey={fallbackKey}
             selectMode={selectMode}
             selected={selected.has(d.sha256)}
+            pubkey={pubkey}
             onOpen={(el) => openViewer(d, el)}
             onCopy={(fmt) => void copyVariant(d, fmt)}
             onToggle={(on) => toggleSelected(d.sha256, on)}
@@ -1045,7 +1078,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
               <button
                 type="button"
                 autoFocus
-                onClick={() => setConfirmHashes(null)}
+                onClick={() => dismissConfirm()}
                 class="px-4 py-2 rounded-lg border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium"
               >
                 Cancel (Esc)
@@ -1065,6 +1098,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       {viewer && (
         <Viewer
           d={viewer}
+          pubkey={pubkey}
           zoomed={zoomed}
           onZoomToggle={() => setZoomed((v) => !v)}
           position={{ index: viewerIdx ?? 0, total: visible.length }}
@@ -1080,12 +1114,13 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
 }
 
 function Card(
-  { d, copiedKey, fallbackKey, selectMode, selected, onOpen, onCopy, onToggle, onDelete }: {
+  { d, copiedKey, fallbackKey, selectMode, selected, pubkey, onOpen, onCopy, onToggle, onDelete }: {
     d: BlobDescriptor;
     copiedKey: string | null;
     fallbackKey: string | null;
     selectMode: boolean;
     selected: boolean;
+    pubkey: string | null;
     onOpen: (el: HTMLElement) => void;
     onCopy: (fmt: CopyFormat) => void;
     onToggle: (on: boolean) => void;
@@ -1101,7 +1136,7 @@ function Card(
   // grid fallbacks and viewer originals are validated identically.
   const src = candidate && isTrustedUrl(candidate) ? candidate : null;
   const [imgFailed, setImgFailed] = useState(false);
-  const name = displayNameFor(d);
+  const name = displayNameFor(d, pubkey);
   const formats: Array<{ fmt: CopyFormat; label: string }> = [
     { fmt: "url", label: "Copy link" },
     { fmt: "md", label: "MD" },
@@ -1240,8 +1275,9 @@ function Card(
 }
 
 function Viewer(
-  { d, zoomed, onZoomToggle, position, hasPrev, hasNext, onNav, onDelete, onClose }: {
+  { d, pubkey, zoomed, onZoomToggle, position, hasPrev, hasNext, onNav, onDelete, onClose }: {
     d: BlobDescriptor;
+    pubkey: string | null | undefined;
     zoomed: boolean;
     onZoomToggle: () => void;
     position: { index: number; total: number };
@@ -1274,7 +1310,7 @@ function Viewer(
       }}
       role="dialog"
       aria-modal="true"
-      aria-label={`Viewing ${displayNameFor(d)}`}
+      aria-label={`Viewing ${displayNameFor(d, pubkey)}`}
     >
       {/* Prev/next arrows — overlay the backdrop edges */}
       {hasPrev && (
@@ -1309,7 +1345,7 @@ function Viewer(
       >
         <div class="flex items-center justify-between mb-3 gap-2">
           <p class="text-xs text-gray-300 font-mono truncate flex-1">
-            {displayNameFor(d)}
+            {displayNameFor(d, pubkey)}
             <span class="text-gray-600 ml-2">
               {position.index + 1}/{position.total}
             </span>
@@ -1330,7 +1366,7 @@ function Viewer(
             ? (
               <img
                 src={d.url}
-                alt={displayNameFor(d)}
+                alt={displayNameFor(d, pubkey)}
                 class={`max-h-[60vh] transition-transform ${
                   zoomed ? "scale-[2.5] cursor-grab active:cursor-grabbing touch-none" : ""
                 }`}
@@ -1386,7 +1422,7 @@ function Viewer(
             )}
             <a
               href={trusted ? d.url : undefined}
-              download={displayNameFor(d)}
+              download={displayNameFor(d, pubkey)}
               class="px-3 py-1.5 rounded border border-gray-700 hover:border-gray-500 text-gray-300 text-xs font-medium"
             >
               Download

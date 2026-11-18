@@ -164,7 +164,7 @@ export function MirrorForm({
 
       let authHeader: string;
       try {
-        authHeader = await signBatch(nostr, hashes, "upload", "Mirror blobs");
+        ({ header: authHeader } = await signBatch(nostr, hashes, "upload", "Mirror blobs"));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         for (const it of batch) {

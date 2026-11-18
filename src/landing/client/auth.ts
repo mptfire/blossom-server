@@ -30,7 +30,7 @@ export async function signBatch(
   hashes: string[],
   authVerb: string,
   content: string,
-): Promise<string> {
+): Promise<{ header: string; pubkey: string }> {
   const expiration = Math.floor(Date.now() / 1000) + 300;
   const authEvent = await nostr.signEvent({
     kind: 24242,
@@ -41,7 +41,15 @@ export async function signBatch(
       String(expiration),
     ]],
   });
-  return "Nostr " + btoa(JSON.stringify(authEvent));
+  // The signer's pubkey is validated and returned so callers can thread the
+  // signing identity through (scoped filename memory, identity checks) —
+  // delete → upload → mirror all verify the same way (r8c consolidated
+  // identity enforcement).
+  const pubkey = (authEvent as { pubkey?: unknown }).pubkey;
+  if (typeof pubkey !== "string" || !/^[0-9a-f]{64}$/.test(pubkey)) {
+    throw new Error("The signer returned an invalid public key");
+  }
+  return { header: "Nostr " + btoa(JSON.stringify(authEvent)), pubkey };
 }
 
 /**
