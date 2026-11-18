@@ -170,6 +170,39 @@ Deno.test("parseAuthEvent: expiration exactly now → 401 (boundary, F15)", () =
   );
 });
 
+Deno.test("parseAuthEvent: dual-domain — new-origin server tag accepted with both domains configured", () => {
+  // Domain migration: clients on the NEW hostname sign server tags for it;
+  // the server must accept tags scoped to ANY configured origin (r8c finding
+  // — verified live: mptfire-scoped tokens 401d when only the old hostname
+  // was configured).
+  const now = Math.floor(Date.now() / 1000);
+  const ev = (server: string) =>
+    makeEvent({
+      tags: [["t", "upload"], ["server", server], [
+        "expiration",
+        String(now + 600),
+      ]],
+    });
+  const ok = parseAuthEvent(
+    encodeEvent(ev("https://blossom.mptfire.de")),
+    ["blossom.mypathtofire.de", "blossom.mptfire.de"],
+  );
+  assertEquals(ok.kind, 24242);
+  const ok2 = parseAuthEvent(
+    encodeEvent(ev("https://blossom.mypathtofire.de")),
+    ["blossom.mypathtofire.de", "blossom.mptfire.de"],
+  );
+  assertEquals(ok2.kind, 24242);
+  assertThrows(
+    () =>
+      parseAuthEvent(
+        encodeEvent(ev("https://blossom.mptfire.de")),
+        ["blossom.mypathtofire.de"],
+      ),
+    HTTPException,
+  );
+});
+
 Deno.test("parseAuthEvent: accepts expiration now+1 (just inside)", () => {
   const now = Math.floor(Date.now() / 1000);
   const event = makeEvent({
@@ -218,7 +251,7 @@ Deno.test("parseAuthEvent: server tag matches domain → accepted", () => {
       ["server", "cdn.example.com"],
     ],
   });
-  const result = parseAuthEvent(encodeEvent(event), "cdn.example.com");
+  const result = parseAuthEvent(encodeEvent(event), ["cdn.example.com"]);
   assertEquals(result.id, event.id);
 });
 
@@ -231,7 +264,7 @@ Deno.test("parseAuthEvent: server tag present but domain does not match → reje
     ],
   });
   assertThrows(
-    () => parseAuthEvent(encodeEvent(event), "cdn.example.com"),
+    () => parseAuthEvent(encodeEvent(event), ["cdn.example.com"]),
     HTTPException,
     "not valid for this server",
   );
@@ -255,7 +288,7 @@ Deno.test("parseAuthEvent: server tag present but serverDomain is null → rejec
 Deno.test("parseAuthEvent: no server tags → valid for any server", () => {
   const event = makeEvent({});
   // Should not throw regardless of serverDomain
-  const result = parseAuthEvent(encodeEvent(event), "anything.example.com");
+  const result = parseAuthEvent(encodeEvent(event), ["anything.example.com"]);
   assertEquals(result.id, event.id);
 });
 
@@ -453,6 +486,6 @@ Deno.test("parseAuthEvent: server tag with full URL value matches bare domain �
     ],
   });
   // Server domain is the bare hostname
-  const result = parseAuthEvent(encodeEvent(event), "cdn.example.com");
+  const result = parseAuthEvent(encodeEvent(event), ["cdn.example.com"]);
   assertEquals(result.id, event.id);
 });

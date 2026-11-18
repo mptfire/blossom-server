@@ -38,7 +38,10 @@ export async function buildApp(
   app.use("*", corsMiddleware);
 
   // BUD-11: parse auth header — populate ctx.var.auth (never blocks)
-  app.use("*", authMiddleware(config.publicDomain));
+  app.use(
+    "*",
+    authMiddleware(config.publicDomain, ...(config.publicDomains ?? [])),
+  );
 
   // Serve any file from the public directory at its root-relative URL.
   // Requests that do not map to a file fall through to the app routes below.

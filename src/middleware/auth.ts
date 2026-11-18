@@ -60,7 +60,7 @@ export function extractHostname(
  */
 export function parseAuthEvent(
   raw: string,
-  serverDomain: string | null,
+  serverDomains: string[] | null,
 ): NostrEvent {
   const now = Math.floor(Date.now() / 1000);
 
@@ -128,9 +128,12 @@ export function parseAuthEvent(
   // Normalize each tag value to a bare hostname in case clients send full URLs.
   const serverTags = auth.tags.filter((t) => t[0] === "server");
   if (serverTags.length > 0) {
+    const acceptedSet = new Set(
+      (serverDomains ?? []).map((d) => extractHostname(d)).filter(Boolean),
+    );
     if (
-      !serverDomain ||
-      !serverTags.some((t) => extractHostname(t[1]) === serverDomain)
+      acceptedSet.size === 0 ||
+      !serverTags.some((t) => acceptedSet.has(extractHostname(t[1])))
     ) {
       throw new HTTPException(401, {
         message: "Auth token not valid for this server",
@@ -150,10 +153,19 @@ export function parseAuthEvent(
  * Global auth middleware — parse-only, never blocks.
  * Populates ctx variables: auth, authType, authExpiration.
  * Call requireAuth() or optionalAuth() in route handlers for enforcement.
+ *
+ * `serverDomains` lists every hostname clients may scope BUD-11 `server`
+ * tags to. With dual-domain serving (e.g. a domain migration running both
+ * names at once) tokens signed for EITHER origin must validate — scoping
+ * the check to a single hostname locks clients out of the new one
+ * (r8c review, dual-domain finding, verified live Nov 17).
  */
 export function authMiddleware(
-  publicDomain: string,
+  ...serverDomains: string[]
 ): MiddlewareHandler<{ Variables: BlossomVariables }> {
+  const accepted = serverDomains
+    .map((d) => extractHostname(d))
+    .filter((d): d is string => Boolean(d));
   return async (ctx, next) => {
     const authHeader = ctx.req.header("authorization");
 
@@ -161,13 +173,13 @@ export function authMiddleware(
       debug("[auth]", "Found Nostr auth header");
 
       const raw = authHeader.slice("Nostr ".length).trim();
-      const domain = extractHostname(publicDomain) ??
+      const domain = accepted[0] ??
         ctx.req.header("host")?.split(":")[0]?.toLowerCase() ?? null;
 
       debug("[auth]", "Extracted domain", domain);
 
       try {
-        const auth = parseAuthEvent(raw, domain);
+        const auth = parseAuthEvent(raw, domain ? [domain] : null);
         debug("[auth]", "Parsed auth event", auth.tags);
 
         ctx.set("auth", auth);

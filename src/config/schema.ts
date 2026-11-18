@@ -557,6 +557,13 @@ export const ConfigSchema = z
           "Defaults to the Host header of the incoming request. Useful behind a reverse proxy. " +
           "Do NOT include a protocol scheme (https://) — bare hostname only.",
       ),
+    publicDomains: z
+      .array(z.string())
+      .optional()
+      .default([])
+      .describe(
+        "Additional hostnames clients may scope BUD-11 server tags to. Use when the same server is reachable under several names (e.g. during a domain migration) so tokens signed for any accepted origin validate.",
+      ),
     // Deprecated: use the "database" section instead.
     // If "database" is absent this value seeds database.path.
     databasePath: z.string().optional().describe(
