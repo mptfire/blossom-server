@@ -106,6 +106,11 @@ export function buildBlobsRouter(
       "Accept-Ranges": "bytes",
       "Cache-Control": "public, max-age=31536000, immutable",
       "X-Content-Type-Options": "nosniff",
+      // Defense-in-depth (r8c review F1): even if a browser renders a stored
+      // blob inline, the sandboxed CSP neutralizes script execution and
+      // same-origin access (NIP-07 prompts, /admin Basic Auth reuse).
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
       ETag: `"${hash}"`,
       "Last-Modified": new Date(blob.uploaded * 1000).toUTCString(),
     };

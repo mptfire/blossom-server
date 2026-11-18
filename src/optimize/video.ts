@@ -136,8 +136,11 @@ export async function optimizeVideo(
 
   const args = buildVideoArgs(inputPath, outputPath, opts, targetFps);
 
+  // S-04: -nostdin blocks interactive prompts (an uploaded playlist can't
+  // read stdin); the protocol whitelist blocks file:/http:/concat: style
+  // input tricks on transcoding jobs driven by untrusted uploads.
   const cmd = new Deno.Command("ffmpeg", {
-    args,
+    args: ["-nostdin", "-protocol_whitelist", "file,pipe,crypto", ...args],
     stdout: "null",
     stderr: "piped",
   });

@@ -6,9 +6,11 @@
  * Uses the same version as the removed CDN runtime (v3.4.17). */
 module.exports = {
   content: [
-    "./src/**/*.tsx",
-    "./src/**/*.ts",
-    "!./src/**/node_modules/**",
+    // UI templates only — scanning backend .ts files pulled server-code
+    // strings into the stylesheet as bogus classes (r8c review F7:
+    // .[s3\:commit] etc.). Admin pages are covered by the admin glob.
+    "./src/landing/**/*.tsx",
+    "./src/admin/**/*.tsx",
   ],
   corePlugins: { preflight: true },
 };

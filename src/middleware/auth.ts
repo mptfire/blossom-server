@@ -81,6 +81,23 @@ export function parseAuthEvent(
     });
   }
 
+  // Structural validation BEFORE any property arithmetic — a malformed
+  // payload (tags: null, created_at: "…", non-object JSON) previously threw
+  // TypeError inside the tag lookups, which authMiddleware surfaced as a
+  // 500 instead of a 400 (r8c reviews F6/S-06). created_at must be a real
+  // number: a string slipped past the drift arithmetic (NaN comparisons are
+  // always false) and let garbage run the expensive verify path.
+  if (
+    typeof auth !== "object" ||
+    auth === null ||
+    typeof auth.created_at !== "number" ||
+    !Number.isSafeInteger(auth.created_at) ||
+    !Array.isArray(auth.tags) ||
+    !auth.tags.every((t) => Array.isArray(t) && typeof t[0] === "string")
+  ) {
+    throw new HTTPException(400, { message: "Malformed auth event structure" });
+  }
+
   // BUD-11 validation
   if (auth.kind !== 24242) {
     throw new HTTPException(400, { message: "Auth event must be kind 24242" });

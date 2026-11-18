@@ -158,6 +158,51 @@ Deno.test("parseAuthEvent: rejects float-style and suffixed expiration strings",
   }
 });
 
+// r8c reviews F6/S-06: malformed structures must 400, never 500.
+Deno.test("parseAuthEvent: tags null → 400 (not a TypeError/500)", () => {
+  const event = {
+    kind: 24242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: null,
+    content: "x",
+  } as unknown as NostrEvent;
+  assertThrows(
+    () => parseAuthEvent(encodeEvent(event), null),
+    HTTPException,
+    "Malformed auth event structure",
+  );
+});
+
+Deno.test("parseAuthEvent: non-number created_at → 400 (NaN drift bypass closed)", () => {
+  // Built unsigned: finalizeEvent refuses malformed events, but the server
+  // receives them regardless — validation must fire before verifyEvent.
+  const event = {
+    kind: 24242,
+    created_at: "not-a-number",
+    tags: [["t", "upload"], ["expiration", "9999999999"]],
+    content: "x",
+  } as unknown as NostrEvent;
+  assertThrows(
+    () => parseAuthEvent(encodeEvent(event), null),
+    HTTPException,
+    "Malformed auth event structure",
+  );
+});
+
+Deno.test("parseAuthEvent: tags containing non-array entries → 400", () => {
+  const event = {
+    kind: 24242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["t", "upload"], "garbage"],
+    content: "x",
+  } as unknown as NostrEvent;
+  assertThrows(
+    () => parseAuthEvent(encodeEvent(event), null),
+    HTTPException,
+    "Malformed auth event structure",
+  );
+});
+
 Deno.test("parseAuthEvent: expiration exactly now → 401 (boundary, F15)", () => {
   const now = Math.floor(Date.now() / 1000);
   const event = makeEvent({

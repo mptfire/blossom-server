@@ -125,7 +125,9 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [fallbackKey, setFallbackKey] = useState<string | null>(null);
   // Viewer is an index into the current visible list so prev/next can walk it.
-  const [viewerIdx, setViewerIdx] = useState<number | null>(null);
+  // viewerHash: key the open viewer by blob hash — immune to index shifts
+  // when descriptors are removed (r8c review F2).
+  const [viewerHash, setViewerHash] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState(false);
   const lastCardRef = useRef<HTMLElement | null>(null);
   // Restored — these were dropped during the security refactor, which made
@@ -177,7 +179,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     setError(null);
     setCopiedKey(null);
     setFallbackKey(null);
-    setViewerIdx(null);
+    setViewerHash(null);
     setZoomed(false);
     setFilter("all");
     setSortKey("newest");
@@ -246,7 +248,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       finished.current = false;
       setCopiedKey(null);
       setFallbackKey(null);
-      setViewerIdx(null);
+      setViewerHash(null);
       setZoomed(false);
       setFilter("all");
       setSortKey("newest");
@@ -508,23 +510,23 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
 
   function openViewer(d: BlobDescriptor, el: HTMLElement): void {
     lastCardRef.current = el;
-    const idx = computeVisible().findIndex((x) => x.sha256 === d.sha256);
     setZoomed(false);
-    setViewerIdx(idx >= 0 ? idx : null);
+    setViewerHash(d.sha256);
   }
 
   function closeViewer(): void {
-    setViewerIdx(null);
+    setViewerHash(null);
     setZoomed(false); // unmounts any <video>/<audio> → playback stops
     lastCardRef.current?.focus();
   }
 
   function stepViewer(dir: number): void {
     setZoomed(false);
-    setViewerIdx((i) => {
-      if (i === null) return null;
+    setViewerHash((current) => {
+      const list = computeVisible();
+      const i = current ? list.findIndex((x) => x.sha256 === current) : -1;
       const n = i + dir;
-      return n >= 0 && n < computeVisible().length ? n : i;
+      return n >= 0 && n < list.length ? list[n].sha256 : (current ?? null);
     });
   }
 
@@ -602,9 +604,8 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
      * state still holds the pre-delete list in this closure). */
     const reconcile = (): void => {
       if (removed.length === 0) return;
-      const openHash = viewerIdx !== null
-        ? computeVisible()[viewerIdx]?.sha256 ?? null
-        : null;
+      // viewerHash is stable across descriptor removals (hash-keyed, r8c F2)
+      const openHash = viewerHash;
       const gone = new Set(removed);
       setDescriptors((prev) => prev.filter((d) => !gone.has(d.sha256)));
       for (const h of removed) seenHashes.current!.delete(h);
@@ -613,8 +614,8 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
         for (const h of removed) next.delete(h);
         return next;
       });
-      if (openHash && gone.has(openHash)) {
-        setViewerIdx(null);
+      if (viewerHash && gone.has(viewerHash)) {
+        setViewerHash(null);
         setZoomed(false);
       }
     };
@@ -632,7 +633,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
           // The extension may have switched accounts between prompts — a
           // token from a different key must never be sent (r8 senior review,
           // medium finding: shared blobs would lose the WRONG key's ownership).
-          if (signedPubkey && pubkeyRef.current && signedPubkey !== pubkeyRef.current) {
+          if (!signedPubkey || signedPubkey !== pubkeyRef.current) {
             aborted = "the signer switched to a different Nostr key";
             break; // reconcile + failure notice run after the outer finally
           }
@@ -671,7 +672,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "/" && !selectMode && confirmHashes === null) {
+      if (e.key === "/" && !selectMode && confirmHashes === null && viewerHash === null) {
         const search = document.querySelector<HTMLInputElement>(
           'input[type="search"]',
         );
@@ -686,29 +687,30 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     };
     globalThis.addEventListener("keydown", onKey);
     return () => globalThis.removeEventListener("keydown", onKey);
-  }, [selectMode, confirmHashes]);
+  }, [selectMode, confirmHashes, viewerHash]);
 
   useEffect(() => {
-    // Confirm dialog open → Esc cancels, Enter confirms (destructive default
-    // deliberately NOT on Enter for safety — Enter only confirms when the
-    // dialog's own button holds focus). Viewer open → Esc/arrows/Z.
-    if (confirmHashes) {
-      const onKey = (e: KeyboardEvent) => {
-        if (e.key === "Escape") setConfirmHashes(null);
-      };
-      globalThis.addEventListener("keydown", onKey);
-      return () => globalThis.removeEventListener("keydown", onKey);
-    }
-    if (viewerIdx === null) return;
+    // Whichever dialog is topmost owns the keyboard: the confirm dialog when
+    // open (Esc cancels — destructive default deliberately NOT on Enter),
+    // otherwise the viewer (Esc closes, arrows navigate, Z zooms). Tab
+    // containment is scoped to the TOPMOST dialog — without this, Tab from
+    // the confirm dialog walks into the underlying viewer's buttons
+    // (r8c review F2).
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeViewer();
+      const topDialog = [...document.querySelectorAll('[role="dialog"]')].pop();
+      if (!topDialog) return;
+      if (e.key === "Escape") {
+        if (confirmHashes) setConfirmHashes(null);
+        else closeViewer();
+        return;
+      }
+      if (confirmHashes) return; // viewer keys never fire behind the confirm
       if (e.key === "ArrowLeft") stepViewer(-1);
       if (e.key === "ArrowRight") stepViewer(1);
       if (e.key === "z" || e.key === "Z") setZoomed((v) => !v);
-      // Minimal focus containment: keep Tab cycling inside the dialog.
       if (e.key === "Tab") {
-        const focusables = document.querySelectorAll<HTMLElement>(
-          '[role="dialog"] button, [role="dialog"] a, [role="dialog"] input',
+        const focusables = topDialog.querySelectorAll<HTMLElement>(
+          'button, a, input',
         );
         if (focusables.length === 0) return;
         const first = focusables[0];
@@ -724,7 +726,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
     };
     globalThis.addEventListener("keydown", onKey);
     return () => globalThis.removeEventListener("keydown", onKey);
-  }, [viewerIdx, confirmHashes]);
+  }, [viewerHash, confirmHashes]);
 
   if (phase !== "ready") {
     return (
@@ -777,9 +779,12 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   // Filters/search/sort apply to loaded pages; server-side type filtering is
   // the ?type= param (upstream candidate for whole-library filtering).
   const visible = computeVisible();
-  const viewer = viewerIdx !== null && viewerIdx < visible.length
-    ? visible[viewerIdx]
-    : null;
+  // viewerIdx derived per render from the hash — immune to index shifts
+  // when descriptors are removed (r8c review F2).
+  const viewerIdx = viewerHash !== null
+    ? visible.findIndex((d) => d.sha256 === viewerHash)
+    : -1;
+  const viewer = viewerIdx >= 0 ? visible[viewerIdx] : null;
   const filterChips: Array<{ key: FilterKind; label: string }> = [
     { key: "all", label: "All" },
     { key: "image", label: "Images" },
@@ -1261,7 +1266,12 @@ function Viewer(
   return (
     <div
       class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        // Only a press that starts ON the backdrop closes the viewer — a
+        // pan drag that begins on the image and releases on the backdrop
+        // must not (r8c review F5).
+        if (e.target === e.currentTarget) onClose();
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={`Viewing ${displayNameFor(d)}`}
