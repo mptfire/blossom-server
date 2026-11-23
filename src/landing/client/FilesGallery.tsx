@@ -560,7 +560,7 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       {
         newest: (a, b) => b.uploaded - a.uploaded,
         oldest: (a, b) => a.uploaded - b.uploaded,
-        name: (a, b) => displayNameFor(a).localeCompare(displayNameFor(b)),
+        name: (a, b) => displayNameFor(a, pubkey).localeCompare(displayNameFor(b, pubkey)),
         size: (a, b) => b.size - a.size,
       };
     return filtered.sort(by[sortKey]);

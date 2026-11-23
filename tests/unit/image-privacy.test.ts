@@ -11,7 +11,7 @@
  * Requires the native sharp module (desktop runner).
  */
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { optimizeImage } from "../../src/optimize/image.ts";
 

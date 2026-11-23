@@ -37,7 +37,6 @@ import { LocalStorage } from "../../src/storage/local.ts";
 const skA = generateSecretKey();
 const pkA = getPublicKey(skA);
 const skB = generateSecretKey();
-const pkB = getPublicKey(skB);
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer);
