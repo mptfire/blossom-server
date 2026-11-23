@@ -30,10 +30,14 @@ export async function optimizeImage(
   let pipeline = sharp(inputPath).rotate();
 
   if (opts.keepExif) {
+    // Intentional retention: preserve all metadata (GPS, artist, …)
     pipeline = pipeline.withMetadata();
-  } else {
-    pipeline = pipeline.withMetadata({ exif: {} });
   }
+  // keepExif=false: call withMetadata() NOT AT ALL — sharp strips every
+  // metadata block (EXIF, XMP, IPTC) by default. The previous
+  // `withMetadata({ exif: {} })` RETAINED the existing EXIF: the empty
+  // overlay merges on top of the original blocks, so GPS coordinates and
+  // artist fields survived the "strip" (r8c senior review, privacy defect).
 
   // Resize to fit inside the bounding box without upscaling
   pipeline = pipeline.resize(opts.maxWidth, opts.maxHeight, {
@@ -84,10 +88,11 @@ export async function optimizeGif(
   // animated: true preserves all frames
   let pipeline = sharp(inputPath, { animated: true }).rotate();
 
-  if (opts.keepExif) {
-    pipeline = pipeline.withMetadata();
+  if (!opts.keepExif) {
+    // keepExif=false: sharp's default is to strip ALL metadata — the GPS
+    // and artist blocks are only retained when withMetadata() is called.
   } else {
-    pipeline = pipeline.withMetadata({ exif: {} });
+    pipeline = pipeline.withMetadata();
   }
 
   pipeline = pipeline.resize(opts.maxWidth, opts.maxHeight, {
