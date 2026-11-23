@@ -69,8 +69,7 @@ async function optimize(
 }
 
 Deno.test({
-  name:
-    "EXIF: keepExif=false strips artist/GPS from JPEG, PNG and WebP output",
+  name: "EXIF: keepExif=false strips artist/GPS from JPEG, PNG and WebP output",
   async fn() {
     const fixture = join(tmpRoot, "fixture.jpg");
     await exifFixture(fixture);

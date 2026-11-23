@@ -99,7 +99,12 @@ export function buildBlobsRouter(
         "|font/[a-z0-9.+-]+" +
         "|application/(x-font-ttf|font-woff|x-font-woff|vnd\\.ms-fontobject))$",
     );
-    const inline = inlineTypeRe.test(normalizedType);
+    // Wildcard families must not smuggle XML subtypes ("video/mp4+xml",
+    // "font/x+xml"…) — exclude any +xml//xml suffix before family matching
+    // (r8b review F4: every */*+xml is an XML MIME per WHATWG mimesniff).
+    const inline =
+      !(normalizedType.endsWith("+xml") || normalizedType.endsWith("/xml")) &&
+      inlineTypeRe.test(normalizedType);
     const headers: Record<string, string> = {
       "Content-Type": mimeType,
       "Content-Length": String(blob.size),

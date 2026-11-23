@@ -98,6 +98,10 @@ Deno.test({
       [xslTarget, "text/xml"],
       [xslTarget, "application/xml"],
       [script, "application/xslt+xml"],
+      // wildcard-family +xml smuggling (r8b review F4-before-merge)
+      [script, "video/mp4+xml"],
+      [script, "font/x+xml"],
+      [script, "application/rdf+xml"],
     ];
     for (const [content, type] of cases) {
       const hash = await seed(content, type);
