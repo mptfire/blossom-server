@@ -93,7 +93,12 @@ export function parseAuthEvent(
     typeof auth.created_at !== "number" ||
     !Number.isSafeInteger(auth.created_at) ||
     !Array.isArray(auth.tags) ||
-    !auth.tags.every((t) => Array.isArray(t) && typeof t[0] === "string")
+    !auth.tags.every(
+      (t) =>
+        Array.isArray(t) &&
+        t.length > 0 &&
+        t.every((el) => typeof el === "string"),
+    )
   ) {
     throw new HTTPException(400, { message: "Malformed auth event structure" });
   }

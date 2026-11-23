@@ -177,7 +177,10 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
   /** Clear every piece of gallery state. Called on disconnect and identity
    * change — an atomic identity boundary (senior review item S3). */
   function resetGalleryState(): void {
-    clearFilenames(); // names are identity-specific (r8 senior review, low)
+    deleteOp.current?.abort();
+    deleteOp.current = null;
+    clearFilenames(pubkeyRef.current); // identity-scoped (r8 senior review, low)
+    tokenRef.current = null;
     tokenRef.current = null;
     pubkeyRef.current = null;
     setPubkey(null);
@@ -267,10 +270,12 @@ export function FilesGallery({ listEnabled }: { listEnabled: boolean }) {
       setSelected(new Set());
       // r8 senior review (medium): identity-specific transient state must not
       // outlive the key that opened it.
+      deleteOp.current?.abort();
+      deleteOp.current = null;
       setConfirmHashes(null);
       setDeleteProgress(null);
       setNotice(null);
-      clearFilenames();
+      clearFilenames(pubkeyRef.current);
     }
     pubkeyRef.current = signedPubkey;
     setPubkey(signedPubkey);
